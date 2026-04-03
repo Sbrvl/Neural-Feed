@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuralFeed</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 420px;
+      min-height: 600px;
+      font-family: 'Google Sans', Roboto, Arial, sans-serif;
+      background: #f8f9fa;
+      color: #202124;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: #1a73e8;
+      color: white;
+    }
+    .topbar-title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+    .topbar-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.2);
+      letter-spacing: 0.5px;
+    }
+    .topbar-badge.analyzing { background: #fbbc04; color: #202124; }
+    .topbar-badge.done { background: rgba(255,255,255,0.2); }
+    .topbar-actions { display: flex; gap: 8px; }
+    .topbar-btn {
+      background: none;
+      border: none;
+      color: white;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      opacity: 0.85;
+    }
+    .topbar-btn:hover { opacity: 1; background: rgba(255,255,255,0.15); }
+
+    /* ── Cards ── */
+    .card {
+      background: white;
+      border-radius: 12px;
+      margin: 12px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+    }
+
+    /* ── Score card ── */
+    .score-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 20px;
+    }
+    .score-number {
+      font-size: 56px;
+      font-weight: 700;
+      line-height: 1;
+      min-width: 80px;
+      text-align: center;
+    }
+    .score-number.green { color: #34a853; }
+    .score-number.yellow { color: #fbbc04; }
+    .score-number.red { color: #ea4335; }
+    .score-info { flex: 1; }
+    .score-label {
+      font-size: 13px;
+      color: #5f6368;
+      margin-bottom: 4px;
+    }
+    .score-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .score-subtitle {
+      font-size: 12px;
+      color: #5f6368;
+    }
+    .score-disclaimer {
+      font-size: 10px;
+      color: #9aa0a6;
+      margin-top: 6px;
+      cursor: help;
+      border-bottom: 1px dotted #9aa0a6;
+      display: inline-block;
+    }
+
+    /* ── Loading state ── */
+    .loading-card {
+      text-align: center;
+      padding: 32px 16px;
+    }
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #e8eaed;
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 14px; color: #5f6368; }
+    .loading-subtext { font-size: 12px; color: #9aa0a6; margin-top: 4px; }
+
+    /* ── Waiting state ── */
+    .waiting-card {
+      text-align: center;
+      padding: 40px 16px;
+      color: #5f6368;
+    }
+    .waiting-icon { font-size: 40px; margin-bottom: 8px; }
+    .waiting-text { font-size: 14px; }
+
+    /* ── Network bars ── */
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #5f6368;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+    .network-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .network-label {
+      font-size: 12px;
+      font-weight: 500;
+      width: 100px;
+      flex-shrink: 0;
+    }
+    .network-bar-bg {
+      flex: 1;
+      height: 8px;
+      background: #e8eaed;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .network-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.4s ease;
+    }
+    .network-value {
+      font-size: 11px;
+      color: #5f6368;
+      width: 36px;
+      text-align: right;
+    }
+
+    /* Network colours */
+    .bar-dmn { background: #4285f4; }
+    .bar-reward { background: #ea4335; }
+    .bar-fpn { background: #34a853; }
+    .bar-visual { background: #fbbc04; }
+    .bar-somatomotor { background: #00bcd4; }
+
+    /* ── 3D Brain viewer ── */
+    .brain-viewer-card { padding: 0; overflow: hidden; }
+    .brain-viewer-card iframe {
+      width: 100%;
+      height: 280px;
+      border: none;
+      display: block;
+    }
+    .brain-viewer-placeholder {
+      height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #9aa0a6;
+      font-size: 13px;
+      background: #f8f9fa;
+    }
+
+    /* ── Timeseries sparkline ── */
+    .sparkline-canvas {
+      width: 100%;
+      height: 80px;
+      display: block;
+    }
+    .sparkline-legend {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: #5f6368;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .animation-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .anim-btn {
+      background: none;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      color: #5f6368;
+    }
+    .anim-btn:hover { background: #f8f9fa; }
+    .anim-time {
+      font-size: 11px;
+      color: #9aa0a6;
+      flex: 1;
+      text-align: right;
+    }
+
+    /* ── Share card & actions ── */
+    .action-row {
+      display: flex;
+      gap: 8px;
+      margin: 0 12px 12px;
+    }
+    .action-btn {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      background: white;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      color: #1a73e8;
+      text-align: center;
+      transition: background 0.15s;
+    }
+    .action-btn:hover { background: #e8f0fe; border-color: #1a73e8; }
+    .action-btn.primary {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+    }
+    .action-btn.primary:hover { background: #1557b0; }
+
+    /* ── Error state ── */
+    .error-card {
+      padding: 16px;
+      background: #fce8e6;
+      border-left: 3px solid #ea4335;
+    }
+    .error-text { font-size: 13px; color: #c5221f; }
+    .error-detail { font-size: 11px; color: #ea4335; margin-top: 4px; }
+
+    /* ── Platform badge ── */
+    .platform-tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: #e8eaed;
+      color: #5f6368;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    /* ── Hidden share canvas ── */
+    #shareCanvas { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <span class="topbar-title">NeuralFeed</span>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <span id="statusBadge" class="topbar-badge">READY</span>
+    <div class="topbar-actions">
+      <button class="topbar-btn" id="dashboardBtn" title="Session history">📊</button>
+    </div>
+  </div>
+</div>
+
+<!-- Main content area — swapped between states -->
+<div id="mainContent">
+
+  <!-- Waiting state (default) -->
+  <div id="waitingState" class="card waiting-card">
+    <div class="waiting-icon">🧠</div>
+    <div class="waiting-text">Open Instagram, TikTok, or YouTube Shorts<br>and watch a reel to begin.</div>
+  </div>
+
+</div>
+
+<!-- Share canvas (hidden, used by html2canvas) -->
+<canvas id="shareCanvas"></canvas>
+
+<script src="constants.js"></script>
+<script src="html2canvas.min.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

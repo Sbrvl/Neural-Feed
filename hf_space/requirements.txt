@@ -1,0 +1,7 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+numpy>=1.26.0
+nilearn>=0.10.3
+torch
+# tribev2 is installed from source — see Dockerfile
