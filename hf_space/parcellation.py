@@ -8,8 +8,9 @@ This module:
 1. Loads Schaefer 200 surface-native labels for fsaverage5 (left + right hemisphere)
 2. Loads Tian subcortical labels (appended after cortical vertices in some models — handle separately)
 3. Averages preds over label indices → per-network mean activation timeseries
-4. Z-scores each network across the reel's own timeseries (makes scores comparable)
-5. Returns brain_rot_score = (reward_z + dmn_z) / max(fpn_z, 0.01)
+4. Computes the NeuralFeed Brain Health Score (0-100) using six literature-grounded
+   components: coupling strength, network magnitude, narrative complexity,
+   sensory-executive ratio, sensory chaos, and hijack index
 
 Prior learning: TRIBE v2 is surface-native (fsaverage5). NiftiLabelsMasker is WRONG here.
 Use manual index averaging on surface vertex arrays.
@@ -211,36 +212,113 @@ def compute_network_scores(preds):
         else:
             network_ts[net_key] = np.zeros(n_timesteps)
 
-    # ── Reward: approximate from Tian subcortical labels in Schaefer atlas ──
-    # Tian subcortex isn't in Schaefer 200 labels by default.
-    # Proxy: use Schaefer 'Limbic' network as reward approximation,
-    # scaled with a note that true reward requires the Tian atlas.
-    # TODO: Load Tian atlas separately for true nucleus accumbens / caudate ROIs.
-    reward_ts = network_ts.get('limbic', np.zeros(n_timesteps))
+    # ── Map Schaefer 7-network names to NeuralFeed scoring network names ──
+    # visual → Vis, auditory → SomMot (closest proxy), executive → Cont/FPN,
+    # language → Limbic (proxy), attention → DorsAttn, dmn → DefaultMode,
+    # salience → SalVentAttn
+    visual_ts    = network_ts['visual']
+    auditory_ts  = network_ts['somatomotor']
+    executive_ts = network_ts['fpn']
+    language_ts  = network_ts['limbic']
+    attention_ts = network_ts['dorsal_attn']
+    dmn_ts       = network_ts['dmn']
+    salience_ts  = network_ts['salience']
 
-    # ── Z-score each network ──
+    # === NeuralFeed Brain Health Score (TRIBE v2) ===
+
+    # === STEP 2: Composite TPN ===
+    tpn_ts = (executive_ts + language_ts + attention_ts) / 3.0
+
+    EPSILON = 0.01
+
+    # === STEP 3: Per-content normalization (min-max within this content) ===
+    def normalize(val, min_val, max_val):
+        if max_val - min_val < EPSILON:
+            return 0.5
+        return float(np.clip((val - min_val) / (max_val - min_val), 0, 1))
+
+    # === COMPONENT 1: Coupling Strength (w1 = 0.25) ===
+    # |corr(DMN, TPN)| — near 0 = brain rot, high = organized brain
+    corr_matrix = np.corrcoef(dmn_ts, tpn_ts)
+    correlation_val = corr_matrix[0, 1] if not np.isnan(corr_matrix[0, 1]) else 0.0
+    coupling_strength = abs(correlation_val)  # Already 0 to 1
+
+    # === COMPONENT 2: Network Magnitude (w2 = 0.10) ===
+    # Overall activation level — both networks active = brain is working
+    network_magnitude = np.mean(tpn_ts) + np.mean(dmn_ts)
+    # Normalize against range observed in this content
+    mag_min, mag_max = np.min(tpn_ts + dmn_ts), np.max(tpn_ts + dmn_ts)
+    network_magnitude_norm = normalize(network_magnitude, mag_min, mag_max * 2)
+
+    # === COMPONENT 3: Narrative Complexity (w3 = 0.20) ===
+    # Temporal variance in COGNITIVE networks only — excludes sensory
+    narrative_complexity = np.std(tpn_ts) + np.std(language_ts)
+    nc_max = max(np.std(visual_ts) + np.std(auditory_ts), narrative_complexity, EPSILON)
+    narrative_complexity_norm = normalize(narrative_complexity, 0, nc_max * 2)
+
+    # === COMPONENT 4: Sensory-to-Executive Ratio / SER (w4 = 0.15) ===
+    # High sensory + low executive = junk food for the brain
+    mean_sensory = np.mean(visual_ts + auditory_ts)
+    mean_exec = np.mean(executive_ts)
+    ser = mean_sensory / (mean_exec + EPSILON)
+    ser_norm = normalize(ser, 0, max(ser * 2, 3.0))
+
+    # === COMPONENT 5: Sensory Chaos (w5 = 0.10) ===
+    # Visual/auditory volatility — jump cuts, flashing, sound blasts
+    sensory_chaos = np.std(visual_ts) + np.std(auditory_ts)
+    sc_max = max(narrative_complexity, sensory_chaos, EPSILON)
+    sensory_chaos_norm = normalize(sensory_chaos, 0, sc_max * 2)
+
+    # === COMPONENT 6: Hijack Index (w6 = 0.20) ===
+    # Addiction signature: salience spikes * sensory load / executive brakes
+    salience_volatility = np.std(salience_ts)  # Temporal std = intermittent reward pattern
+    hijack_index = (salience_volatility * mean_sensory) / (mean_exec + EPSILON)
+    hijack_max = max(hijack_index * 2, 5.0)
+    hijack_norm = normalize(hijack_index, 0, hijack_max)
+
+    # === LITERATURE-GROUNDED WEIGHTS ===
+    W1 = 0.25   # Coupling Strength (+) — Fox et al. 2005
+    W2 = 0.10   # Network Magnitude (+) — secondary importance
+    W3 = 0.20   # Narrative Complexity (+) — Stillesjö et al. 2021
+    W4 = 0.15   # SER (-) — sensory overload penalty
+    W5 = 0.10   # Sensory Chaos (-) — jump cut penalty
+    W6 = 0.20   # Hijack Index (-) — Wang et al. 2017, Montag et al. 2017
+
+    # === FINAL SCORE COMPUTATION ===
+    raw_score = (
+        W1 * coupling_strength +
+        W2 * network_magnitude_norm +
+        W3 * narrative_complexity_norm -
+        W4 * ser_norm -
+        W5 * sensory_chaos_norm -
+        W6 * hijack_norm
+    )
+
+    # Raw score range is roughly [-0.45, +0.55], rescale to 0-100
+    neuralfeed_score = np.clip((raw_score + 0.45) * 100, 0, 100)
+
+    # === CREATIVITY / FLOW BONUS (up to +10 points) ===
+    # When DMN and Executive co-activate with positive correlation = creative engagement
+    dmn_mean = np.mean(dmn_ts)
+    exec_mean = np.mean(executive_ts)
+    dmn_75th = np.percentile(np.concatenate([dmn_ts, executive_ts]), 75)
+
+    if dmn_mean > dmn_75th and exec_mean > dmn_75th and correlation_val > 0.3:
+        neuralfeed_score = min(100, neuralfeed_score + 10)
+        pattern = "Creative/Narrative Engagement (Flow)"
+    elif np.mean(tpn_ts) > dmn_mean and correlation_val < -0.3:
+        pattern = "Active Learning / Deep Work"
+    else:
+        pattern = "Passive Consumption (Brain Rot)"
+
+    # ── Per-timestep timeseries for animation (backward compat) ──
     def zs(ts): return _zscore_timeseries(ts)
+    dmn_z    = zs(dmn_ts)
+    fpn_z    = zs(executive_ts)
+    reward_z = zs(language_ts)
+    visual_z = zs(visual_ts)
+    sommotor_z = zs(auditory_ts)
 
-    dmn_z    = zs(network_ts['dmn'])
-    fpn_z    = zs(network_ts['fpn'])
-    reward_z = zs(reward_ts)
-    visual_z = zs(network_ts['visual'])
-    sommotor_z = zs(network_ts['somatomotor'])
-
-    # ── Floor all values to avoid NaN propagation ──
-    def safe_mean(z): return float(np.clip(z, -10, 10).mean()) if z.size > 0 else 0.001
-
-    dmn_scalar    = max(safe_mean(dmn_z), 0.001)
-    fpn_scalar    = max(safe_mean(fpn_z), 0.001)
-    reward_scalar = max(safe_mean(reward_z), 0.001)
-    visual_scalar = max(safe_mean(visual_z), 0.001)
-    sommotor_scalar = max(safe_mean(sommotor_z), 0.001)
-
-    # ── Brain rot score ──
-    brain_rot = (reward_scalar + dmn_scalar) / max(fpn_scalar, 0.01)
-
-    # ── Per-timestep timeseries for animation ──
-    # Each frame: [dmn, fpn, reward, visual, somatomotor, brain_rot_t]
     timeseries_frames = []
     for t in range(n_timesteps):
         dmn_t    = float(np.clip(dmn_z[t], -10, 10))
@@ -248,15 +326,30 @@ def compute_network_scores(preds):
         rew_t    = float(np.clip(reward_z[t], -10, 10))
         vis_t    = float(np.clip(visual_z[t], -10, 10))
         som_t    = float(np.clip(sommotor_z[t], -10, 10))
-        brot_t   = (max(rew_t, 0.001) + max(dmn_t, 0.001)) / max(max(fpn_t, 0.001), 0.01)
+        brot_t   = float(neuralfeed_score)
         timeseries_frames.append([dmn_t, fpn_t, rew_t, vis_t, som_t, brot_t])
 
+    # ── Backward-compatible scalars for app.py ──
+    def safe_mean(z): return float(np.clip(z, -10, 10).mean()) if z.size > 0 else 0.001
+
     return {
-        'dmn':         dmn_scalar,
-        'fpn':         fpn_scalar,
-        'reward':      reward_scalar,
-        'visual':      visual_scalar,
-        'somatomotor': sommotor_scalar,
-        'brain_rot':   brain_rot,
-        'timeseries':  timeseries_frames,
+        'dmn':              max(safe_mean(dmn_z), 0.001),
+        'fpn':              max(safe_mean(fpn_z), 0.001),
+        'reward':           max(safe_mean(reward_z), 0.001),
+        'visual':           max(safe_mean(visual_z), 0.001),
+        'somatomotor':      max(safe_mean(sommotor_z), 0.001),
+        'brain_rot':        round(float(neuralfeed_score), 2),
+        'timeseries':       timeseries_frames,
+        'score':            round(float(neuralfeed_score), 2),
+        'dominant_pattern': pattern,
+        'correlation_direction': round(float(correlation_val), 3),
+        'metrics': {
+            'coupling_strength':        round(float(coupling_strength), 3),
+            'network_magnitude':        round(float(network_magnitude_norm), 3),
+            'narrative_complexity':      round(float(narrative_complexity_norm), 3),
+            'sensory_executive_ratio':   round(float(ser), 3),
+            'sensory_chaos':            round(float(sensory_chaos_norm), 3),
+            'hijack_index':             round(float(hijack_index), 3),
+        },
+        'weights': {'w1': W1, 'w2': W2, 'w3': W3, 'w4': W4, 'w5': W5, 'w6': W6},
     }
