@@ -8,18 +8,6 @@ async function init() {
   const { sessionHistory = [] } = await chrome.storage.local.get('sessionHistory');
   render(sessionHistory);
 
-  document.getElementById('clearMockBtn').addEventListener('click', async () => {
-    const { sessionHistory: h = [] } = await chrome.storage.local.get('sessionHistory');
-    const clean = h.filter(r => !r.mock);
-    const removed = h.length - clean.length;
-    if (removed === 0) { alert('No mock data found.'); return; }
-    if (confirm(`Remove ${removed} mock result(s)? Real results will be kept.`)) {
-      await chrome.storage.local.set({ sessionHistory: clean });
-      chrome.runtime.sendMessage({ action: ACTIONS.RESET_SESSION }).catch(() => {});
-      render(clean);
-    }
-  });
-
   document.getElementById('clearAllBtn').addEventListener('click', async () => {
     if (confirm('Clear all session history? This cannot be undone.')) {
       await chrome.storage.local.remove(['sessionHistory', 'lastResult']);
@@ -71,12 +59,17 @@ function renderStats(history) {
   const avg = key => (history.reduce((s, r) => s + (r[key] || 0), 0) / history.length);
 
   const avgScore = avg('brain_rot');
-  const scoreEl  = document.getElementById('statAvgScore');
+  const scoreClass = avgScore <= SCORE_THRESHOLDS.GREEN_MAX  ? 'green'
+                   : avgScore <= SCORE_THRESHOLDS.YELLOW_MAX ? 'yellow' : 'red';
+
+  const scoreEl = document.getElementById('statAvgScore');
   scoreEl.textContent = avgScore.toFixed(1);
-  scoreEl.className = 'stat-value ' + (
-    avgScore <= SCORE_THRESHOLDS.GREEN_MAX  ? 'green'  :
-    avgScore <= SCORE_THRESHOLDS.YELLOW_MAX ? 'yellow' : 'red'
-  );
+  scoreEl.className = 'hero-number ' + scoreClass;
+
+  const ring = document.getElementById('heroRing');
+  if (ring) ring.className = 'hero-ring ' + scoreClass;
+  const badge = document.getElementById('heroBadge');
+  if (badge) badge.className = 'hero-badge ' + scoreClass;
 
   document.getElementById('statAvgDmn').textContent    = avg('dmn').toFixed(1);
   document.getElementById('statAvgFpn').textContent    = avg('fpn').toFixed(1);
@@ -101,8 +94,12 @@ function renderChart(history) {
   const labels = last30.map((_, i) => `#${history.length - last30.length + i + 1}`);
   const scores = last30.map(r => +(r.brain_rot || 0).toFixed(1));
   const colors = scores.map(s =>
-    s <= SCORE_THRESHOLDS.GREEN_MAX  ? '#34a853' :
-    s <= SCORE_THRESHOLDS.YELLOW_MAX ? '#fbbc04' : '#ea4335'
+    s <= SCORE_THRESHOLDS.GREEN_MAX  ? 'rgba(80,200,120,0.55)'  :
+    s <= SCORE_THRESHOLDS.YELLOW_MAX ? 'rgba(255,190,50,0.55)'  : 'rgba(255,110,130,0.55)'
+  );
+  const borderColors = scores.map(s =>
+    s <= SCORE_THRESHOLDS.GREEN_MAX  ? 'rgba(80,200,120,0.85)'  :
+    s <= SCORE_THRESHOLDS.YELLOW_MAX ? 'rgba(255,170,30,0.85)'  : 'rgba(240,80,110,0.85)'
   );
 
   chartInstance = new Chart(canvas, {
@@ -113,7 +110,9 @@ function renderChart(history) {
         label: 'Brain Rot Score',
         data: scores,
         backgroundColor: colors,
-        borderRadius: 4,
+        borderColor: borderColors,
+        borderWidth: 1,
+        borderRadius: 6,
       }],
     },
     options: {
@@ -122,6 +121,13 @@ function renderChart(history) {
       plugins: {
         legend: { display: false },
         tooltip: {
+          backgroundColor: 'rgba(255,255,255,0.85)',
+          backdropFilter: 'blur(12px)',
+          titleColor: 'rgba(0,0,0,0.75)',
+          bodyColor: 'rgba(0,0,0,0.55)',
+          borderColor: 'rgba(255,255,255,0.6)',
+          borderWidth: 1,
+          padding: 10,
           callbacks: {
             title: (items) => {
               const r = last30[items[0].dataIndex];
@@ -141,12 +147,14 @@ function renderChart(history) {
         y: {
           beginAtZero: true,
           max: 10,
-          grid: { color: '#f1f3f4' },
-          ticks: { color: '#5f6368', font: { size: 11 } },
+          grid: { color: 'rgba(0,0,0,0.04)' },
+          ticks: { color: 'rgba(0,0,0,0.35)', font: { size: 11, family: 'Inter, system-ui, sans-serif' } },
+          border: { display: false },
         },
         x: {
           grid: { display: false },
-          ticks: { color: '#5f6368', font: { size: 11 } },
+          ticks: { color: 'rgba(0,0,0,0.35)', font: { size: 11, family: 'Inter, system-ui, sans-serif' } },
+          border: { display: false },
         },
       },
     },

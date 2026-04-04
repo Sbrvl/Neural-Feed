@@ -273,11 +273,11 @@ def compute_network_scores(preds):
 
         # ── Debug components ──
         'metrics': {
-            'coupling_strength':      round(coupling, 3),
-            'network_magnitude':      round(mag_norm, 3),
-            'narrative_complexity':   round(narr_norm, 3),
-            'sensory_exec_ratio':     round(ser, 3),
-            'sensory_chaos':          round(chaos_norm, 3),
-            'hijack_index':           round(hijack_norm, 3),
+            'coupling_strength':      round(float(coupling), 3),
+            'network_magnitude':      round(float(mag_norm), 3),
+            'narrative_complexity':   round(float(narr_norm), 3),
+            'sensory_exec_ratio':     round(float(ser), 3),
+            'sensory_chaos':          round(float(chaos_norm), 3),
+            'hijack_index':           round(float(hijack_norm), 3),
         },
     }

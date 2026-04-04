@@ -4,322 +4,295 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NeuralFeed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    body {
-      width: 420px;
-      min-height: 400px;
-      font-family: 'Google Sans', Roboto, Arial, sans-serif;
-      background: #f8f9fa;
-      color: #202124;
+    html, body {
+      margin: 0;
+      padding: 0;
     }
 
-    /* ── Top bar ── */
+    body {
+      width: 380px;
+      min-height: 480px;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      color: rgba(0, 0, 0, 0.82);
+      /* Fills the entire white background — no gaps, no padding */
+      background:
+        radial-gradient(ellipse at 15% 0%,  rgba(200, 218, 255, 0.95) 0%, transparent 55%),
+        radial-gradient(ellipse at 85% 100%, rgba(218, 200, 255, 0.85) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 8%,  rgba(255, 210, 220, 0.6)  0%, transparent 45%),
+        #eaedfa;
+    }
+
+    /* ── Topbar ── */
     .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 12px 16px;
-      background: #1a73e8;
-      color: white;
+      padding: 13px 16px;
+      border-bottom: 0.5px solid rgba(255, 255, 255, 0.5);
+      background: rgba(255, 255, 255, 0.22);
     }
-    .topbar-title { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+
+    .brand { display: flex; align-items: center; gap: 8px; }
+
+    .logo-mark {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.55);
+      border: 0.5px solid rgba(255, 255, 255, 0.8);
+      box-shadow: inset 0 1px 1px rgba(255,255,255,0.9);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; flex-shrink: 0;
+    }
+
+    .topbar-title {
+      font-size: 14px; font-weight: 600;
+      color: rgba(0, 0, 0, 0.7); letter-spacing: -0.2px;
+    }
 
     #toggleBtn {
-      padding: 6px 14px;
-      border: 2px solid rgba(255,255,255,0.7);
+      padding: 5px 13px;
+      border: 0.5px solid rgba(0, 0, 0, 0.11);
       border-radius: 20px;
-      background: transparent;
-      color: white;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      letter-spacing: 0.3px;
-      transition: background 0.15s, border-color 0.15s;
+      background: rgba(255, 255, 255, 0.55);
+      color: rgba(0, 0, 0, 0.62);
+      font-size: 10px; font-weight: 600;
+      cursor: pointer; letter-spacing: 0.3px;
+      transition: all 0.15s; font-family: inherit; white-space: nowrap;
     }
-    #toggleBtn:hover { background: rgba(255,255,255,0.15); border-color: white; }
+    #toggleBtn:hover { background: rgba(255,255,255,0.75); }
     #toggleBtn.active {
-      background: rgba(234,67,53,0.25);
-      border-color: #f28b82;
-      color: #f28b82;
+      background: rgba(255, 80, 80, 0.1);
+      border-color: rgba(210, 55, 55, 0.22);
+      color: rgba(185, 38, 38, 0.9);
     }
 
     /* ── Cards ── */
     .card {
-      background: white;
-      border-radius: 12px;
-      margin: 12px;
+      margin: 10px;
       padding: 16px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      background: rgba(255, 255, 255, 0.35);
+      border-radius: 20px;
+      border: 0.5px solid rgba(255, 255, 255, 0.72);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+      position: relative;
+      overflow: hidden;
     }
 
-    /* ── Waiting / error ── */
-    .waiting-card { text-align: center; padding: 40px 20px; color: #5f6368; }
-    .waiting-icon { font-size: 36px; margin-bottom: 10px; }
-    .waiting-text { font-size: 14px; line-height: 1.5; }
+    /* ── Waiting ── */
+    .waiting-card { text-align: center; padding: 40px 20px; }
+    .waiting-icon { font-size: 36px; margin-bottom: 10px; opacity: 0.55; }
+    .waiting-text { font-size: 12px; line-height: 1.65; color: rgba(0,0,0,0.42); }
+
+    /* ── Error ── */
     .error-banner {
-      margin: 12px;
-      padding: 12px 16px;
-      background: #fce8e6;
-      border-left: 3px solid #ea4335;
-      border-radius: 8px;
-      font-size: 13px;
-      color: #c5221f;
+      margin: 8px 10px 0;
+      padding: 10px 14px;
+      background: rgba(255, 80, 80, 0.09);
+      border: 0.5px solid rgba(210, 55, 55, 0.22);
+      border-radius: 16px;
+      font-size: 12px;
+      color: rgba(175, 38, 38, 0.9);
     }
 
     /* ── Session header ── */
     .session-header {
-      font-size: 11px;
-      font-weight: 600;
-      color: #5f6368;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      margin-bottom: 14px;
+      font-size: 9px; font-weight: 700;
+      color: rgba(0,0,0,0.28); text-transform: uppercase;
+      letter-spacing: 1.2px; margin-bottom: 14px;
     }
-    .session-header span { color: #1a73e8; font-size: 13px; }
+    .session-header span {
+      color: rgba(0,0,0,0.62); font-size: 12px;
+      font-weight: 700; text-transform: none; letter-spacing: 0;
+    }
 
     /* ── Network bars ── */
     .network-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
+      display: flex; align-items: center;
+      gap: 8px; margin-bottom: 8px;
     }
     .network-label {
-      font-size: 11px;
-      font-weight: 500;
-      width: 108px;
-      flex-shrink: 0;
-      color: #3c4043;
+      font-size: 11px; font-weight: 500;
+      width: 112px; flex-shrink: 0;
+      color: rgba(0,0,0,0.42);
     }
     .network-bar-bg {
-      flex: 1;
-      height: 7px;
-      background: #e8eaed;
-      border-radius: 4px;
-      overflow: hidden;
+      flex: 1; height: 3px;
+      background: rgba(0,0,0,0.05);
+      border-radius: 3px; overflow: hidden;
     }
     .network-bar-fill {
-      height: 100%;
-      border-radius: 4px;
-      width: 0%;
-      transition: width 0.5s ease;
+      height: 100%; border-radius: 3px;
+      width: 0%; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .network-value {
-      font-size: 11px;
-      font-weight: 600;
-      color: #202124;
-      width: 30px;
-      text-align: right;
+      font-size: 11px; font-weight: 600;
+      color: rgba(0,0,0,0.58); width: 28px;
+      text-align: right; font-variant-numeric: tabular-nums;
     }
 
-    /* Bar colours */
-    .bar-brainrot  { background: linear-gradient(90deg, #fbbc04, #ea4335); }
-    .bar-dmn       { background: #4285f4; }
-    .bar-fpn       { background: #34a853; }
-    .bar-reward    { background: #ea4335; }
-    .bar-visual    { background: #9c27b0; }
-    .bar-somot     { background: #ff6d00; }
-
-    /* Coupling/hijack mini-badges */
-    .metrics-row {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    .metric-badge {
-      font-size: 10px;
-      padding: 3px 7px;
-      border-radius: 8px;
-      background: #f1f3f4;
-      color: #5f6368;
-      display: flex;
-      gap: 4px;
-    }
-    .metric-badge strong { color: #202124; }
+    /* Pastel bar colors */
+    .bar-brainrot { background: linear-gradient(90deg, #ffb3ba, #ff8fa0); }
+    .bar-dmn      { background: linear-gradient(90deg, #a8c8ff, #7eb0f8); }
+    .bar-fpn      { background: linear-gradient(90deg, #a8e6c0, #70c898); }
+    .bar-reward   { background: linear-gradient(90deg, #ffd4a0, #ffb870); }
+    .bar-visual   { background: linear-gradient(90deg, #d0b0ff, #b080f8); }
+    .bar-somot    { background: linear-gradient(90deg, #ffe8a0, #ffd060); }
 
     /* ── Divider ── */
     .divider {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin: 10px 0 12px;
-      font-size: 11px;
-      font-weight: 600;
-      color: #9aa0a6;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      display: flex; align-items: center; gap: 8px;
+      margin: 12px 0 13px; font-size: 9px; font-weight: 700;
+      color: rgba(0,0,0,0.2); text-transform: uppercase; letter-spacing: 0.8px;
     }
     .divider::before, .divider::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: #e8eaed;
+      content: ''; flex: 1; height: 0.5px;
+      background: rgba(0,0,0,0.06);
     }
 
     /* ── Last reel ── */
     .last-reel-score {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 10px;
-    }
-    .last-score-number {
-      font-size: 44px;
-      font-weight: 700;
-      line-height: 1;
-      min-width: 60px;
-    }
-    .last-score-number.green  { color: #34a853; }
-    .last-score-number.yellow { color: #fbbc04; }
-    .last-score-number.red    { color: #ea4335; }
-    .last-score-info { flex: 1; }
-    .last-score-label { font-size: 12px; color: #5f6368; }
-    .last-score-title { font-size: 14px; font-weight: 600; }
-    .last-score-pattern {
-      font-size: 11px;
-      color: #5f6368;
-      margin-top: 2px;
-      font-style: italic;
-    }
-    .last-score-platform {
-      display: inline-block;
-      font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 10px;
-      background: #e8eaed;
-      color: #5f6368;
-      margin-top: 4px;
+      display: flex; align-items: center;
+      gap: 14px; margin-bottom: 14px;
     }
 
-    /* Analyzing */
+    .last-score-number {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-size: 44px; font-weight: 400; font-style: italic;
+      line-height: 1; width: 72px; height: 72px;
+      border-radius: 50%; display: flex;
+      align-items: center; justify-content: center;
+      flex-shrink: 0; letter-spacing: -1px;
+    }
+    .last-score-number.green  { color: rgba(18,128,62,0.9); background: rgba(80,200,120,0.1); border: 0.5px solid rgba(80,200,120,0.28); }
+    .last-score-number.yellow { color: rgba(138,88,0,0.9); background: rgba(255,200,60,0.1); border: 0.5px solid rgba(255,185,45,0.28); }
+    .last-score-number.red    { color: rgba(178,48,68,0.9); background: rgba(255,120,140,0.1); border: 0.5px solid rgba(255,108,128,0.28); }
+
+    .last-score-info { flex: 1; min-width: 0; }
+    .last-score-label { font-size: 9px; font-weight: 600; color: rgba(0,0,0,0.28); text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 3px; }
+    .last-score-title { font-size: 13px; font-weight: 600; color: rgba(0,0,0,0.72); }
+    .last-score-pattern { font-size: 11px; color: rgba(0,0,0,0.38); margin-top: 3px; font-style: italic; }
+    .last-score-platform {
+      display: inline-block; font-size: 9px; padding: 2px 7px;
+      border-radius: 20px; background: rgba(0,0,0,0.04);
+      color: rgba(0,0,0,0.42); font-weight: 600; margin-top: 4px;
+      border: 0.5px solid rgba(0,0,0,0.08);
+    }
+
+    /* ── Metric badges ── */
+    .metrics-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 10px; }
+    .metric-badge {
+      font-size: 9px; padding: 2px 7px; border-radius: 20px;
+      background: rgba(0,0,0,0.03); color: rgba(0,0,0,0.38);
+      display: flex; gap: 3px; border: 0.5px solid rgba(0,0,0,0.06);
+    }
+    .metric-badge strong { color: rgba(0,0,0,0.62); }
+
+    /* ── Analyzing ── */
     .analyzing-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 0;
-      color: #5f6368;
-      font-size: 13px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 0; color: rgba(0,0,0,0.38); font-size: 11px;
     }
     .mini-spinner {
-      width: 16px;
-      height: 16px;
-      border: 2px solid #e8eaed;
-      border-top-color: #1a73e8;
+      width: 14px; height: 14px;
+      border: 1.5px solid rgba(0,0,0,0.07);
+      border-top-color: rgba(0,0,0,0.38);
       border-radius: 50%;
-      animation: spin 1s linear infinite;
-      flex-shrink: 0;
+      animation: spin 0.8s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Action row ── */
-    .action-row {
-      display: flex;
-      gap: 8px;
-      margin: 4px 12px 12px;
-    }
+    .action-row { margin: 0 10px 10px; }
     .action-btn {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid #dadce0;
-      border-radius: 8px;
-      background: white;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      color: #1a73e8;
-      text-align: center;
-      transition: background 0.15s;
+      width: 100%; padding: 11px;
+      border: 0.5px solid rgba(255,255,255,0.65);
+      border-radius: 20px;
+      background: rgba(255,255,255,0.42);
+      font-size: 12px; font-weight: 600;
+      cursor: pointer; color: rgba(0,0,0,0.6);
+      text-align: center; transition: all 0.15s; font-family: inherit;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
     }
-    .action-btn:hover { background: #e8f0fe; border-color: #1a73e8; }
-    .action-btn.primary {
-      background: #1a73e8;
-      color: white;
-      border-color: #1a73e8;
-    }
-    .action-btn.primary:hover { background: #1557b0; }
+    .action-btn:hover { background: rgba(255,255,255,0.6); }
 
+    /* ── Disclaimer ── */
     .score-disclaimer {
-      font-size: 10px;
-      color: #9aa0a6;
-      margin-top: 8px;
-      cursor: help;
-      border-bottom: 1px dotted #9aa0a6;
-      display: inline-block;
+      display: inline-block; font-size: 9px;
+      color: rgba(0,0,0,0.22); margin-top: 10px;
+      cursor: help; border-bottom: 0.5px dotted rgba(0,0,0,0.15);
     }
   </style>
 </head>
 <body>
 
-<div class="topbar">
-  <span class="topbar-title">🧠 NeuralFeed</span>
-  <button id="toggleBtn">▶ START RECORDING</button>
-</div>
-
-<div id="errorBanner" class="error-banner" style="display:none;"></div>
-
-<!-- Waiting state -->
-<div id="waitingCard" class="card waiting-card">
-  <div class="waiting-icon">🧠</div>
-  <div class="waiting-text">
-    Open Instagram, TikTok, or YouTube Shorts,<br>then press <strong>START RECORDING</strong>.
-  </div>
-</div>
-
-<!-- Session card -->
-<div id="sessionCard" class="card" style="display:none;">
-
-  <div class="session-header">
-    SESSION &nbsp;·&nbsp; <span id="reelCount">0</span> reels analyzed
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo-mark">🧠</div>
+      <span class="topbar-title">NeuralFeed</span>
+    </div>
+    <button id="toggleBtn">▶ START RECORDING</button>
   </div>
 
-  <!-- Session rolling average bars -->
-  <div class="network-row">
-    <span class="network-label">Brain Rot Avg</span>
-    <div class="network-bar-bg"><div id="avgBarBrainRot" class="network-bar-fill bar-brainrot"></div></div>
-    <span id="avgValBrainRot" class="network-value">—</span>
-  </div>
-  <div class="network-row">
-    <span class="network-label">DMN</span>
-    <div class="network-bar-bg"><div id="avgBarDmn" class="network-bar-fill bar-dmn"></div></div>
-    <span id="avgValDmn" class="network-value">—</span>
-  </div>
-  <div class="network-row">
-    <span class="network-label">FPN</span>
-    <div class="network-bar-bg"><div id="avgBarFpn" class="network-bar-fill bar-fpn"></div></div>
-    <span id="avgValFpn" class="network-value">—</span>
-  </div>
-  <div class="network-row">
-    <span class="network-label">Reward / Salience</span>
-    <div class="network-bar-bg"><div id="avgBarReward" class="network-bar-fill bar-reward"></div></div>
-    <span id="avgValReward" class="network-value">—</span>
-  </div>
-  <div class="network-row">
-    <span class="network-label">Visual</span>
-    <div class="network-bar-bg"><div id="avgBarVisual" class="network-bar-fill bar-visual"></div></div>
-    <span id="avgValVisual" class="network-value">—</span>
-  </div>
-  <div class="network-row">
-    <span class="network-label">Somatomotor</span>
-    <div class="network-bar-bg"><div id="avgBarSomot" class="network-bar-fill bar-somot"></div></div>
-    <span id="avgValSomot" class="network-value">—</span>
+  <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
+  <div id="waitingCard" class="card waiting-card">
+    <div class="waiting-icon">🧠</div>
+    <div class="waiting-text">
+      Open Instagram, TikTok, or YouTube Shorts,<br>then press <strong>START RECORDING</strong>.
+    </div>
   </div>
 
-  <!-- Last reel -->
-  <div class="divider">Last Reel</div>
-  <div id="lastReelContent"></div>
+  <div id="sessionCard" class="card" style="display:none;">
+    <div class="session-header">
+      SESSION &nbsp;·&nbsp; <span id="reelCount">0</span> reels analyzed
+    </div>
+    <div class="network-row">
+      <span class="network-label">Brain Rot Avg</span>
+      <div class="network-bar-bg"><div id="avgBarBrainRot" class="network-bar-fill bar-brainrot"></div></div>
+      <span id="avgValBrainRot" class="network-value">—</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">DMN</span>
+      <div class="network-bar-bg"><div id="avgBarDmn" class="network-bar-fill bar-dmn"></div></div>
+      <span id="avgValDmn" class="network-value">—</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">FPN</span>
+      <div class="network-bar-bg"><div id="avgBarFpn" class="network-bar-fill bar-fpn"></div></div>
+      <span id="avgValFpn" class="network-value">—</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">Reward / Salience</span>
+      <div class="network-bar-bg"><div id="avgBarReward" class="network-bar-fill bar-reward"></div></div>
+      <span id="avgValReward" class="network-value">—</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">Visual</span>
+      <div class="network-bar-bg"><div id="avgBarVisual" class="network-bar-fill bar-visual"></div></div>
+      <span id="avgValVisual" class="network-value">—</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">Somatomotor</span>
+      <div class="network-bar-bg"><div id="avgBarSomot" class="network-bar-fill bar-somot"></div></div>
+      <span id="avgValSomot" class="network-value">—</span>
+    </div>
+    <div class="divider">Last Reel</div>
+    <div id="lastReelContent"></div>
+    <span class="score-disclaimer"
+      title="Predictions are population-average brain responses estimated from audio/video features, not your individual neural activity.">
+      ⓘ Population average — not personal neural data
+    </span>
+  </div>
 
-  <span class="score-disclaimer"
-    title="Predictions are population-average brain responses estimated from audio/video features, not your individual neural activity.">
-    ⓘ Population average — not personal neural data
-  </span>
-</div>
-
-<div class="action-row">
-  <button class="action-btn primary" id="dashboardBtn">📊 View Dashboard</button>
-</div>
+  <div class="action-row">
+    <button class="action-btn" id="dashboardBtn">📊 View Dashboard</button>
+  </div>
 
 <script src="constants.js"></script>
 <script src="popup.js"></script>
