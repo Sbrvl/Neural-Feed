@@ -4,4 +4,6 @@ python-multipart>=0.0.9
 numpy>=1.26.0
 nilearn>=0.10.3
 torch
-# tribev2 is installed from source — see Dockerfile
+spaces
+gradio
+tribev2[plotting] @ git+https://github.com/facebookresearch/tribev2.git

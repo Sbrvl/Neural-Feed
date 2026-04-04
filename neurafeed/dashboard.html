@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeuralFeed — Session History</title>
+  <title>NeuralFeed — Dashboard</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -19,27 +19,50 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
     }
     .header h1 { font-size: 20px; font-weight: 600; }
     .header-sub { font-size: 13px; opacity: 0.8; }
-    .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+    .header-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .hdr-btn {
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.4);
+      background: rgba(255,255,255,0.15);
+      color: white;
+    }
+    .hdr-btn:hover { background: rgba(255,255,255,0.25); }
+    .hdr-btn.danger { border-color: #f28b82; color: #f28b82; background: rgba(234,67,53,0.15); }
+    .hdr-btn.danger:hover { background: rgba(234,67,53,0.25); }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+    /* ── Stat grid ── */
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
       gap: 12px;
       margin-bottom: 24px;
     }
     .stat-card {
       background: white;
       border-radius: 12px;
-      padding: 16px;
+      padding: 14px 16px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       text-align: center;
     }
-    .stat-value { font-size: 32px; font-weight: 700; color: #1a73e8; }
-    .stat-value.red { color: #ea4335; }
-    .stat-value.green { color: #34a853; }
-    .stat-label { font-size: 12px; color: #5f6368; margin-top: 4px; }
+    .stat-value { font-size: 28px; font-weight: 700; color: #1a73e8; }
+    .stat-value.red    { color: #ea4335; }
+    .stat-value.yellow { color: #fbbc04; }
+    .stat-value.green  { color: #34a853; }
+    .stat-value.purple { color: #9c27b0; }
+    .stat-value.orange { color: #ff6d00; }
+    .stat-label { font-size: 11px; color: #5f6368; margin-top: 4px; line-height: 1.3; }
+
+    /* ── Chart card ── */
     .chart-card {
       background: white;
       border-radius: 12px;
@@ -49,31 +72,45 @@
     }
     .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: #202124; }
     .chart-container { position: relative; height: 220px; }
+
+    /* ── Table card ── */
     .table-card {
       background: white;
       border-radius: 12px;
       overflow: hidden;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      margin-bottom: 24px;
     }
-    table { width: 100%; border-collapse: collapse; }
+    .table-title {
+      font-size: 14px;
+      font-weight: 600;
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid #e8eaed;
+      color: #202124;
+    }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
     thead { background: #f8f9fa; }
     th {
-      padding: 12px 16px;
-      font-size: 12px;
+      padding: 10px 14px;
+      font-size: 11px;
       font-weight: 600;
       color: #5f6368;
       text-align: left;
       text-transform: uppercase;
       letter-spacing: 0.5px;
       border-bottom: 1px solid #e8eaed;
+      white-space: nowrap;
     }
     td {
-      padding: 12px 16px;
-      font-size: 13px;
+      padding: 10px 14px;
+      font-size: 12px;
       border-bottom: 1px solid #f1f3f4;
+      white-space: nowrap;
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #f8f9fa; }
+
     .score-pill {
       display: inline-block;
       padding: 2px 8px;
@@ -81,9 +118,10 @@
       font-size: 12px;
       font-weight: 600;
     }
-    .score-pill.green { background: #e6f4ea; color: #137333; }
+    .score-pill.green  { background: #e6f4ea; color: #137333; }
     .score-pill.yellow { background: #fef7e0; color: #b06000; }
-    .score-pill.red { background: #fce8e6; color: #c5221f; }
+    .score-pill.red    { background: #fce8e6; color: #c5221f; }
+
     .platform-tag {
       font-size: 11px;
       padding: 2px 6px;
@@ -91,74 +129,69 @@
       background: #e8eaed;
       color: #5f6368;
     }
+    .pattern-tag {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 8px;
+      font-style: italic;
+    }
+    .pattern-tag.flow    { background: #e6f4ea; color: #137333; }
+    .pattern-tag.active  { background: #e8f0fe; color: #1a73e8; }
+    .pattern-tag.passive { background: #fce8e6; color: #c5221f; }
+
     .empty-state {
       text-align: center;
       padding: 60px 24px;
       color: #5f6368;
     }
     .empty-icon { font-size: 48px; margin-bottom: 12px; }
-    .clear-btn {
-      display: inline-block;
-      margin-top: 16px;
-      padding: 8px 16px;
-      border: 1px solid #dadce0;
-      border-radius: 8px;
-      background: white;
-      font-size: 13px;
-      cursor: pointer;
-      color: #ea4335;
-    }
-    .clear-btn:hover { background: #fce8e6; }
+
+    /* Metric cell colours */
+    .mval { font-family: monospace; font-size: 11px; }
   </style>
 </head>
 <body>
 
 <div class="header">
   <div>
-    <h1>NeuralFeed — Session History</h1>
-    <div class="header-sub">Population-average brain encoding via Meta TRIBE v2</div>
+    <h1>🧠 NeuralFeed Dashboard</h1>
+    <div class="header-sub">Population-average brain encoding via Meta TRIBE v2 · Auto-refreshes on new results</div>
   </div>
-  <button class="clear-btn" id="clearBtn" style="color:white;border-color:rgba(255,255,255,0.4);background:rgba(255,255,255,0.15)">
-    Clear history
-  </button>
+  <div class="header-actions">
+    <button class="hdr-btn" id="clearMockBtn">🗑 Remove mock data</button>
+    <button class="hdr-btn danger" id="clearAllBtn">Clear all history</button>
+  </div>
 </div>
 
 <div class="container">
 
   <!-- Stat cards -->
-  <div class="stat-grid">
-    <div class="stat-card">
-      <div class="stat-value" id="statAvgScore">—</div>
-      <div class="stat-label">Avg Brain Rot Score</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value" id="statAvgDmn">—</div>
-      <div class="stat-label">Avg DMN Activation</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value green" id="statAvgFpn">—</div>
-      <div class="stat-label">Avg FPN Activation</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value" id="statReelsToday">0</div>
-      <div class="stat-label">Reels Today</div>
-    </div>
+  <div class="stat-grid" id="statGrid">
+    <div class="stat-card"><div class="stat-value" id="statAvgScore">—</div><div class="stat-label">Avg Brain Rot</div></div>
+    <div class="stat-card"><div class="stat-value" id="statAvgDmn">—</div><div class="stat-label">Avg DMN</div></div>
+    <div class="stat-card"><div class="stat-value green" id="statAvgFpn">—</div><div class="stat-label">Avg FPN</div></div>
+    <div class="stat-card"><div class="stat-value red" id="statAvgReward">—</div><div class="stat-label">Avg Reward / Salience</div></div>
+    <div class="stat-card"><div class="stat-value purple" id="statAvgVisual">—</div><div class="stat-label">Avg Visual</div></div>
+    <div class="stat-card"><div class="stat-value orange" id="statAvgSomot">—</div><div class="stat-label">Avg Somatomotor</div></div>
+    <div class="stat-card"><div class="stat-value" id="statReelsToday">0</div><div class="stat-label">Reels Today</div></div>
+    <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total Reels</div></div>
   </div>
 
-  <!-- Bar chart -->
+  <!-- Chart -->
   <div class="chart-card">
-    <div class="chart-title">Brain Rot Score per Reel</div>
-    <div class="chart-container">
-      <canvas id="scoreChart"></canvas>
-    </div>
+    <div class="chart-title">Brain Rot Score — Last 30 Reels</div>
+    <div class="chart-container"><canvas id="scoreChart"></canvas></div>
   </div>
 
   <!-- Per-reel table -->
-  <div class="table-card" id="tableContainer">
-    <div class="empty-state">
-      <div class="empty-icon">🧠</div>
-      <div>No reels analyzed yet.</div>
-      <div style="margin-top:8px;font-size:12px">Open Instagram, TikTok, or YouTube Shorts and watch a reel.</div>
+  <div class="table-card">
+    <div class="table-title">Reel History</div>
+    <div class="table-scroll" id="tableContainer">
+      <div class="empty-state">
+        <div class="empty-icon">🧠</div>
+        <div>No reels analyzed yet.</div>
+        <div style="margin-top:8px;font-size:12px">Open Instagram, TikTok, or YouTube Shorts and start a session.</div>
+      </div>
     </div>
   </div>
 

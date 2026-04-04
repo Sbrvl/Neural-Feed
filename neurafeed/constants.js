@@ -18,6 +18,7 @@ const ACTIONS = {
   REEL_CHANGED:     'reelChanged',
   SESSION_UPDATE:   'sessionUpdate',
   GET_SESSION_STATE:'getSessionState',
+  RESET_SESSION:    'resetSession',
 };
 
 // Alarm name used by chrome.alarms keepalive during capture
@@ -27,7 +28,7 @@ const ALARM_KEEPALIVE = 'captureKeepalive';
 const QUEUE_MAX_DEPTH = 3;
 
 // AWS EC2 endpoint (http — extension service workers are exempt from mixed-content rules)
-const HF_SPACE_URL = 'http://3.144.178.72:7860';
+const HF_SPACE_URL = 'https://sbrvl-neurafeed.hf.space';
 const HF_API_KEY = 'mysecretkey';
 
 // Brain rot score thresholds

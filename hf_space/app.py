@@ -26,6 +26,8 @@ import tempfile
 from pathlib import Path
 from io import BytesIO
 
+import spaces  # HuggingFace ZeroGPU
+
 import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,6 +57,58 @@ app.add_middleware(
     allow_methods=['GET', 'POST'],
     allow_headers=['*'],
 )
+
+# ─── Patch tribev2: skip WhisperX (uvx not available in this environment) ────
+
+def _patch_whisperx():
+    try:
+        import inspect
+        import pandas as pd
+        from tribev2 import eventstransforms
+        def _no_whisperx(wav_filename, language='english'):
+            return pd.DataFrame(columns=['text', 'start', 'duration', 'sequence_id', 'sentence'])
+        patched = 0
+        for name, cls in inspect.getmembers(eventstransforms, inspect.isclass):
+            if hasattr(cls, '_get_transcript_from_audio'):
+                cls._get_transcript_from_audio = staticmethod(_no_whisperx)
+                patched += 1
+        logger.info(f"WhisperX patched on {patched} class(es) — skipping transcription.")
+    except Exception as e:
+        logger.warning(f"WhisperX patch failed (non-fatal): {e}")
+
+def _patch_neuralset_cpu():
+    """Force only the audio (Wav2VecBert) extractor to CPU.
+    tribev2 config.yaml hardcodes device='cuda' for audio but not video.
+    We only override the audio extractor — video (V-JEPA2) stays on GPU."""
+    try:
+        from neuralset.extractors.audio import Wav2VecBert
+        _orig_post_init = Wav2VecBert.model_post_init
+        def _force_cpu_post_init(self, log__):
+            _orig_post_init(self, log__)
+            self.device = "cpu"
+        Wav2VecBert.model_post_init = _force_cpu_post_init
+        logger.info("Wav2VecBert audio extractor patched to CPU; video extractor left on GPU.")
+    except Exception as e:
+        logger.warning(f"CPU extractor patch failed (non-fatal): {e}")
+
+def _patch_exca_sequential():
+    """Force exca to run jobs in the current thread (no thread pool).
+    ZeroGPU's GPU context doesn't propagate into ThreadPoolExecutor workers —
+    cluster=None makes MapInfra run in the calling thread, preserving GPU context."""
+    try:
+        from exca import MapInfra
+        _orig_init = MapInfra.__init__
+        def _sequential_init(self, *args, **kwargs):
+            kwargs['cluster'] = None  # None = run in current thread (sequential)
+            _orig_init(self, *args, **kwargs)
+        MapInfra.__init__ = _sequential_init
+        logger.info("exca MapInfra patched to sequential mode (GPU context preserved).")
+    except Exception as e:
+        logger.warning(f"exca sequential patch failed (non-fatal): {e}")
+
+_patch_whisperx()
+_patch_neuralset_cpu()
+_patch_exca_sequential()
 
 # ─── Model loading (deferred until first real request) ────────────────────────
 
@@ -174,7 +228,7 @@ async def analyze(
     return JSONResponse(result)
 
 
-FFMPEG_BIN = '/home/ec2-user/ffmpeg-7.0.2-amd64-static/ffmpeg'
+FFMPEG_BIN = 'ffmpeg'  # available in PATH on HuggingFace Spaces
 
 
 def transcode_to_mp4(src: str) -> str:
@@ -186,7 +240,9 @@ def transcode_to_mp4(src: str) -> str:
     import subprocess
     dst = src.replace('.webm', '.mp4')
     result = subprocess.run(
-        [FFMPEG_BIN, '-y', '-i', src, '-c:v', 'libx264', '-c:a', 'aac',
+        [FFMPEG_BIN, '-y', '-i', src,
+         '-vf', 'scale=640:-2',  # V-JEPA2 uses 256px internally; 4K→640p = 28x less work
+         '-c:v', 'libx264', '-c:a', 'aac',
          '-movflags', '+faststart', dst],
         capture_output=True,
     )
@@ -197,6 +253,7 @@ def transcode_to_mp4(src: str) -> str:
     return dst
 
 
+@spaces.GPU
 async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
     """Run TRIBE v2 inference + parcellation + nilearn viewer generation."""
     import subprocess
@@ -210,29 +267,23 @@ async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
     )
     input_path = mp4_path
 
-    # ── TRIBE v2 inference ──
-    logger.info(f"Running TRIBE v2 inference on {input_path}...")
+    # ── TRIBE v2 inference (audio-only — V-JEPA2 video extractor fails on ZeroGPU) ──
+    # V-JEPA2 requires a persistent CUDA context which ZeroGPU does not provide to
+    # the exca thread pool. Skipping the full inference attempt saves ~15s per reel.
+    logger.info(f"Running TRIBE v2 audio-only inference on {input_path}...")
+    audio_path = input_path.replace('.mp4', '.wav').replace('.webm', '.wav')
     try:
-        events_df = model.get_events_dataframe(video_path=input_path)
+        subprocess.run(
+            [FFMPEG_BIN, '-y', '-i', input_path, '-vn', '-acodec', 'pcm_s16le', audio_path],
+            capture_output=True,
+        )
+        events_df = model.get_events_dataframe(audio_path=audio_path)
         preds, segments = model.predict(events=events_df)
-        logger.info(f"TRIBE preds.shape={preds.shape}")
+        logger.info(f"Audio-only inference succeeded. preds.shape={preds.shape}")
     except Exception as e:
-        logger.warning(f"Inference failed with full model ({e}). Retrying audio-only...")
-        try:
-            # Extract audio to wav and pass only audio_path (skips LLaMA transcription).
-            audio_path = video_path.replace('.webm', '.wav')
-            subprocess.run(
-                [FFMPEG_BIN, '-y', '-i', input_path, '-vn', '-acodec', 'pcm_s16le', audio_path],
-                capture_output=True,
-            )
-            events_df = model.get_events_dataframe(audio_path=audio_path)
-            preds, segments = model.predict(events=events_df)
-            logger.info(f"Audio-only inference succeeded. preds.shape={preds.shape}")
-        except Exception as e2:
-            raise RuntimeError(f"TRIBE inference failed: {e2}") from e2
-        finally:
-            Path(audio_path).unlink(missing_ok=True)
+        raise RuntimeError(f"TRIBE inference failed: {e}") from e
     finally:
+        Path(audio_path).unlink(missing_ok=True)
         if mp4_path != video_path:
             Path(mp4_path).unlink(missing_ok=True)
 
@@ -251,17 +302,21 @@ async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
     brain_png_b64 = generate_brain_png(preds)
 
     return {
-        'reel_id':      reel_id,
-        'dmn':          scores['dmn'],
-        'fpn':          scores['fpn'],
-        'reward':       scores['reward'],
-        'visual':       scores['visual'],
-        'somatomotor':  scores['somatomotor'],
-        'brain_rot':    scores['brain_rot'],
-        'viewer_html':  viewer_html,
-        'brain_png_b64': brain_png_b64,
-        'timeseries':   scores['timeseries'],
-        'mock':         False,
+        'reel_id':          reel_id,
+        'dmn':              scores['dmn'],
+        'fpn':              scores['fpn'],
+        'reward':           scores['reward'],
+        'visual':           scores['visual'],
+        'somatomotor':      scores['somatomotor'],
+        'brain_rot':        scores['brain_rot'],
+        'dominant_pattern': scores['dominant_pattern'],
+        'health_score':     scores['health_score'],
+        'correlation':      scores['correlation'],
+        'metrics':          scores['metrics'],
+        'viewer_html':      viewer_html,
+        'brain_png_b64':    brain_png_b64,
+        'timeseries':       scores['timeseries'],
+        'mock':             False,
     }
 
 

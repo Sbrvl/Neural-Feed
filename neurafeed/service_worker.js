@@ -120,6 +120,8 @@ async function getSessionState() {
     totalDmn: 0,
     totalFpn: 0,
     totalReward: 0,
+    totalVisual: 0,
+    totalSomatomotor: 0,
     lastReel: null,
   };
   return await chrome.storage.session.get(defaults);
@@ -132,10 +134,12 @@ async function saveSessionState(patch) {
 function getAverages(state) {
   const n = Math.max(state.reelCount, 1);
   return {
-    brain_rot:          state.totalBrainRot / n,
-    dmn:                state.totalDmn / n,
-    fpn:                state.totalFpn / n,
-    reward:             state.totalReward / n,
+    brain_rot:          state.totalBrainRot    / n,
+    dmn:                state.totalDmn         / n,
+    fpn:                state.totalFpn         / n,
+    reward:             state.totalReward      / n,
+    visual:             (state.totalVisual     || 0) / n,
+    somatomotor:        (state.totalSomatomotor|| 0) / n,
     reelCount:          state.reelCount,
     active:             state.sessionActive,
     analysisInProgress: state.analysisInProgress,
@@ -213,7 +217,6 @@ async function handleMessage(message, sender) {
   // ── START_SESSION ──────────────────────────────────────────────────────────
   if (action === ACTIONS.START_SESSION) {
     console.log('[NeuralFeed SW] START_SESSION received');
-    // sender.tab is undefined for popup messages — must query active tab directly
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const tab = tabs[0];
     if (!tab) return { ok: false, error: 'No active tab found.' };
@@ -221,6 +224,11 @@ async function handleMessage(message, sender) {
     if (!isSupportedUrl(tab.url)) {
       return { ok: false, error: 'Open Instagram, TikTok, or YouTube Shorts first.' };
     }
+
+    // Kill any stale offscreen document / capture stream from a previous session.
+    // Without this, Chrome raises "Cannot capture a tab with an active stream."
+    await closeOffscreenDocument();
+    await new Promise(r => setTimeout(r, 300));
 
     let streamId;
     try {
@@ -251,6 +259,8 @@ async function handleMessage(message, sender) {
       totalDmn: 0,
       totalFpn: 0,
       totalReward: 0,
+      totalVisual: 0,
+      totalSomatomotor: 0,
       lastReel: null,
     });
 
@@ -343,7 +353,10 @@ async function handleMessage(message, sender) {
 
     if (error) {
       console.error(`[NeuralFeed SW] Capture/analysis error for ${reelId}:`, error);
+      await saveSessionState({ analysisInProgress: false });
       notifyPopup(ACTIONS.ANALYSIS_ERROR, { reelId, error });
+      const errState = await getSessionState();
+      notifyPopup(ACTIONS.SESSION_UPDATE, { state: getAverages(errState) });
       return { ok: false };
     }
 
@@ -360,12 +373,15 @@ async function handleMessage(message, sender) {
     const state = await getSessionState();
     const newCount = state.reelCount + 1;
     const patch = {
-      reelCount:      newCount,
-      totalBrainRot:  state.totalBrainRot + (data.brain_rot || 0),
-      totalDmn:       state.totalDmn      + (data.dmn       || 0),
-      totalFpn:       state.totalFpn      + (data.fpn       || 0),
-      totalReward:    state.totalReward   + (data.reward     || 0),
-      lastReel:       result,
+      reelCount:          newCount,
+      analysisInProgress: false,
+      totalBrainRot:      state.totalBrainRot       + (data.brain_rot    || 0),
+      totalDmn:           state.totalDmn            + (data.dmn          || 0),
+      totalFpn:           state.totalFpn            + (data.fpn          || 0),
+      totalReward:        state.totalReward         + (data.reward       || 0),
+      totalVisual:        (state.totalVisual     ||0)+ (data.visual       || 0),
+      totalSomatomotor:   (state.totalSomatomotor||0)+ (data.somatomotor  || 0),
+      lastReel:           result,
     };
     await saveSessionState(patch);
 
@@ -378,6 +394,26 @@ async function handleMessage(message, sender) {
     notifyPopup(ACTIONS.SESSION_UPDATE, { state: getAverages(updatedState) });
     notifyPopup(ACTIONS.ANALYSIS_COMPLETE, { reelId, result });
 
+    return { ok: true };
+  }
+
+  // ── RESET_SESSION ─────────────────────────────────────────────────────────
+  // Called by dashboard when history is cleared, so popup zeroes out immediately.
+  if (action === ACTIONS.RESET_SESSION) {
+    await saveSessionState({
+      reelCount: 0,
+      totalBrainRot: 0,
+      totalDmn: 0,
+      totalFpn: 0,
+      totalReward: 0,
+      totalVisual: 0,
+      totalSomatomotor: 0,
+      lastReel: null,
+      analysisInProgress: false,
+    });
+    chrome.action.setBadgeText({ text: '' });
+    const updated = await getSessionState();
+    notifyPopup(ACTIONS.SESSION_UPDATE, { state: getAverages(updated) });
     return { ok: true };
   }
 
