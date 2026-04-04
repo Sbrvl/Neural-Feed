@@ -14,7 +14,7 @@
   ],
 
   "host_permissions": [
-    "https://*.hf.space/*",
+    "http://3.144.178.72:7860/*",
     "https://www.instagram.com/*",
     "https://www.tiktok.com/*",
     "https://www.youtube.com/*"

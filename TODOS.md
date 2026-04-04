@@ -31,3 +31,23 @@ Generated from /plan-ceo-review + /plan-eng-review on 2026-04-03
 **Cons:** ~$0.60/hr for A10G (~$15/day always-on, ~$4/day if scaled to zero). Not free.
 **Context:** For the hackathon demo, ZeroGPU + pre-warm is sufficient. Post-hackathon if usage grows or if you want to demonstrate the product seriously, upgrade to dedicated.
 **Depends on / blocked by:** Post-hackathon, after confirming there's interest
+
+---
+
+## TODO 4: Server-side job polling
+**What:** Replace the long-lived open HTTP fetch with a job ID pattern. Server returns `{job_id}` immediately. Extension polls `/result/{job_id}` every 30s until complete.
+**Why:** A 35-minute open fetch will eventually be suspended by Chrome's renderer process lifecycle. Current workaround (35-min AbortController timeout) works for demo but will silently fail in production for long CPU-mode sessions.
+**Pros:** Robust to SW restarts and renderer suspension. Enables progress reporting. Allows graceful retry on server restart.
+**Cons:** Requires server changes (job queue in app.py, new /result endpoint). Adds polling complexity to offscreen.js.
+**Context:** Identified in /plan-eng-review (2026-04-04). For hackathon, MOCK_TRIBE=1 makes inference ~1s so not blocking. For real inference post-hackathon, this is the correct architecture.
+**Depends on / blocked by:** Core session mode working (ship hackathon build first)
+
+---
+
+## TODO 5: Session reset button
+**What:** Add a "Reset Session" button in the popup. Clicking it clears chrome.storage.session totals and resets reelCount to 0.
+**Why:** STOP does NOT clear stats by design. Users can't start a fresh comparison session without relaunching Chrome.
+**Pros:** Simple UX. One button + one message handler + one storage clear. 5 min to add.
+**Cons:** Risk of accidental reset if placed too close to Stop button.
+**Context:** Identified in /plan-eng-review (2026-04-04). Bundle into the popup.js rewrite pass.
+**Depends on / blocked by:** popup.js rewrite (bundle into same PR)

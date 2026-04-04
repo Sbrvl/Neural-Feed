@@ -1,19 +1,75 @@
-// offscreen.js — MediaRecorder + HF Space POST (runs in Chrome Offscreen Document)
+// offscreen.js — MediaRecorder + AWS EC2 POST (runs in Chrome Offscreen Document)
 // This is the only context in MV3 where we can use MediaRecorder.
 //
-// Flow:
-//   1. service_worker.js sends CAPTURE_READY with tabId
-//   2. offscreen.js calls chrome.tabCapture.capture() → MediaStream
-//   3. MediaRecorder assembles .webm chunks → Blob
-//   4. On STOP_CAPTURE (or reel ends), POST blob to HF Space /analyze
-//   5. Parse JSON response, send CAPTURE_RESULT back to service_worker.js
+// Architecture: one persistent captureStream per session.
+// The stream is acquired once on CAPTURE_READY and stays alive until STOP_CAPTURE.
+// Between reels, only the MediaRecorder is restarted — no new getUserMedia call needed.
+//
+// ┌──────────────────────────────────────────────────────────────────┐
+// │  Message flow                                                    │
+// │                                                                  │
+// │  CAPTURE_READY {reelId, streamId}                               │
+// │    → getUserMedia(streamId) → captureStream                      │
+// │    → startRecorderForReel(reelId)                                │
+// │                                                                  │
+// │  REEL_CHANGED {reelId}                                          │
+// │    → activeRecorder.stop() → onstop → POST blob (prev reel)     │
+// │    → startRecorderForReel(newReelId)  ← same captureStream       │
+// │                                                                  │
+// │  STOP_CAPTURE {reelId}   (session end)                          │
+// │    → activeRecorder.stop() → onstop → POST blob (final reel)    │
+// │    → captureStream.getTracks().stop()                            │
+// └──────────────────────────────────────────────────────────────────┘
+//
+// NOTE: CPU inference on AWS EC2 takes 5-30 min. Timeout = 35 min.
+//       With MOCK_TRIBE=1 (demo mode) responses come back in ~1s.
 
 'use strict';
 
-let mediaRecorder = null;
-let recordedChunks = [];
-let currentReelId = null;
-let captureStream = null;
+let captureStream  = null;  // Alive for the whole session
+let activeRecorder = null;  // Current MediaRecorder (replaced each reel)
+let currentReelId  = null;
+let audioCtx       = null;  // Web Audio context for audio passthrough to speakers
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getMimeType() {
+  return MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+    ? 'video/webm;codecs=vp8'
+    : 'video/webm';
+}
+
+// Each recorder owns its own chunks array and reelId via closure.
+// This prevents cross-reel data mixing when two recorders overlap.
+function startRecorderForReel(reelId) {
+  const mimeType = getMimeType();
+  const chunks = [];
+  const capturedReelId = reelId;
+
+  const recorder = new MediaRecorder(captureStream, {
+    mimeType,
+    videoBitsPerSecond: 2_500_000,
+    audioBitsPerSecond: 128_000,
+  });
+
+  recorder.ondataavailable = (e) => {
+    if (e.data.size > 0) chunks.push(e.data);
+  };
+
+  recorder.onstop = () => {
+    console.log(`[NeuralFeed Offscreen] Reel ended: ${capturedReelId} (${chunks.length} chunks)`);
+    const blob = new Blob(chunks, { type: mimeType });
+    analyzeBlob(blob, capturedReelId);
+  };
+
+  recorder.onerror = (e) => {
+    reportError(capturedReelId, `MediaRecorder error: ${e.error?.message || 'unknown'}`);
+  };
+
+  recorder.start(1000); // Collect data every 1s
+  console.log(`[NeuralFeed Offscreen] Recording started: ${capturedReelId}`);
+  return recorder;
+}
 
 // ─── Message listener ─────────────────────────────────────────────────────────
 
@@ -22,11 +78,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (action === ACTIONS.CAPTURE_READY) {
     handleCaptureReady(message).then(sendResponse).catch((err) => {
-      console.error('[NeuralFeed Offscreen] Capture error:', err);
+      console.error('[NeuralFeed Offscreen] CAPTURE_READY error:', err);
       sendResponse({ error: err.message });
       reportError(message.reelId, err.message);
     });
     return true;
+  }
+
+  if (action === ACTIONS.REEL_CHANGED) {
+    console.log(`[NeuralFeed Offscreen] REEL_CHANGED received — newReelId=${message.reelId}, captureStream=${captureStream ? 'active' : 'null'}`);
+    handleReelChanged(message.reelId);
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (action === ACTIONS.STOP_CAPTURE) {
@@ -36,90 +99,95 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// ─── Start capture ────────────────────────────────────────────────────────────
+// ─── CAPTURE_READY — session start ────────────────────────────────────────────
 
 async function handleCaptureReady({ reelId, streamId }) {
-  // Guard: don't start a second capture if one is already running
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    console.warn('[NeuralFeed Offscreen] Capture already in progress — stopping previous');
-    stopAndProcess();
-  }
-
-  currentReelId = reelId;
-  recordedChunks = [];
-
-  // Use streamId from service_worker (chrome.tabCapture.getMediaStreamId).
-  // chrome.tabCapture.capture is only available in SW, not in offscreen documents.
-  if (!streamId) {
-    throw new Error('tabCapture stream ID is missing. Make sure the target tab is active and in the foreground.');
-  }
-  captureStream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      mandatory: {
-        chromeMediaSource: 'tab',
-        chromeMediaSourceId: streamId,
-      },
-    },
-    audio: {
-      mandatory: {
-        chromeMediaSource: 'tab',
-        chromeMediaSourceId: streamId,
-      },
-    },
-  });
-
-  // Use explicit bitrate to keep .webm files to ~9MB for a 30s clip
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
-    ? 'video/webm;codecs=vp8'
-    : 'video/webm';
-
-  mediaRecorder = new MediaRecorder(captureStream, {
-    mimeType,
-    videoBitsPerSecond: 2_500_000,
-    audioBitsPerSecond: 128_000,
-  });
-
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
-  };
-
-  const capturedReelId = reelId; // Close over reelId now, before currentReelId can change
-  mediaRecorder.onstop = () => {
-    const blob = new Blob(recordedChunks, { type: mimeType });
-    recordedChunks = [];
-    analyzeBlob(blob, capturedReelId);
-  };
-
-  mediaRecorder.onerror = (e) => {
-    reportError(currentReelId, `MediaRecorder error: ${e.error?.message || 'unknown'}`);
-  };
-
-  // Collect data every 1s so we can detect premature tab closure
-  mediaRecorder.start(1000);
-  return { ok: true };
-}
-
-// ─── Stop capture ─────────────────────────────────────────────────────────────
-
-function handleStopCapture(reelId) {
-  if (reelId !== currentReelId) return; // Different reel — ignore
-  stopAndProcess();
-}
-
-function stopAndProcess() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
+  // Tear down any previous session
+  if (activeRecorder && activeRecorder.state !== 'inactive') {
+    activeRecorder.stop();
+    activeRecorder = null;
   }
   if (captureStream) {
     captureStream.getTracks().forEach(t => t.stop());
     captureStream = null;
   }
+
+  if (!streamId) {
+    throw new Error('streamId missing — make sure the target tab is active.');
+  }
+
+  captureStream = await navigator.mediaDevices.getUserMedia({
+    video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+    audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+  });
+
+  // Route captured audio back to speakers — without this the tab goes silent during capture.
+  audioCtx = new AudioContext();
+  const source = audioCtx.createMediaStreamSource(captureStream);
+  source.connect(audioCtx.destination);
+
+  currentReelId  = reelId;
+  activeRecorder = startRecorderForReel(reelId);
+  return { ok: true };
 }
 
-// ─── POST to HuggingFace Space ────────────────────────────────────────────────
+// ─── REEL_CHANGED — reel boundary ─────────────────────────────────────────────
+// Stop the current recorder (triggers blob assembly + POST for the PREVIOUS reel).
+// Immediately start a new recorder on the same captureStream.
+
+function handleReelChanged(newReelId) {
+  if (!captureStream) {
+    console.warn('[NeuralFeed Offscreen] REEL_CHANGED but no active stream — session not started?');
+    return;
+  }
+
+  // Stop old recorder — its onstop closure POSTs the blob with the old reelId
+  if (activeRecorder && activeRecorder.state !== 'inactive') {
+    activeRecorder.stop();
+  }
+
+  // Start new recorder on the same persistent stream (no new getUserMedia needed)
+  currentReelId  = newReelId;
+  activeRecorder = startRecorderForReel(newReelId);
+}
+
+// ─── STOP_CAPTURE — session end ───────────────────────────────────────────────
+// Stop the final recorder (posts the last blob) and release the stream.
+
+function handleStopCapture(reelId) {
+  // Ignore stale stop messages for reels we no longer track
+  if (reelId && reelId !== currentReelId) {
+    console.warn(`[NeuralFeed Offscreen] STOP_CAPTURE for unknown reel ${reelId} (current: ${currentReelId}) — ignoring`);
+    return;
+  }
+
+  if (activeRecorder && activeRecorder.state !== 'inactive') {
+    activeRecorder.stop(); // onstop assembles and POSTs the final blob
+  }
+  activeRecorder = null;
+
+  // Stop the stream tracks to release the tab capture
+  if (captureStream) {
+    captureStream.getTracks().forEach(t => t.stop());
+    captureStream = null;
+  }
+  if (audioCtx) {
+    audioCtx.close().catch(() => {});
+    audioCtx = null;
+  }
+  currentReelId = null;
+}
+
+// ─── POST to AWS EC2 /analyze ─────────────────────────────────────────────────
 
 async function analyzeBlob(blob, reelId) {
   if (!reelId) return;
+  if (blob.size < 1000) {
+    console.warn(`[NeuralFeed Offscreen] Blob too small for ${reelId} (${blob.size} bytes) — skipping POST`);
+    return;
+  }
+
+  console.log(`[NeuralFeed Offscreen] POSTing ${(blob.size / 1024).toFixed(0)} KB for reel ${reelId}`);
 
   const formData = new FormData();
   formData.append('video', blob, `reel-${reelId}.webm`);
@@ -143,30 +211,26 @@ async function analyzeBlob(blob, reelId) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    reportError(reelId, `HF Space returned ${response.status}: ${body.slice(0, 200)}`);
+    reportError(reelId, `Server returned ${response.status}: ${body.slice(0, 200)}`);
     return;
   }
 
   let data;
   try {
     data = await response.json();
-  } catch (err) {
-    reportError(reelId, `Invalid JSON response from HF Space`);
+  } catch {
+    reportError(reelId, 'Invalid JSON response from server');
     return;
   }
 
-  chrome.runtime.sendMessage({
-    action: ACTIONS.CAPTURE_RESULT,
-    reelId,
-    data,
-  });
+  chrome.runtime.sendMessage({ action: ACTIONS.CAPTURE_RESULT, reelId, data });
 }
 
 // ─── Fetch with retry ─────────────────────────────────────────────────────────
 
 async function fetchWithRetry(url, options, { retries = 1, retryDelayMs = 10_000 } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), 35 * 60 * 1000);
 
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
@@ -186,17 +250,11 @@ async function fetchWithRetry(url, options, { retries = 1, retryDelayMs = 10_000
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 // ─── Error reporting ──────────────────────────────────────────────────────────
 
 function reportError(reelId, error) {
   console.error(`[NeuralFeed Offscreen] ${error}`);
-  chrome.runtime.sendMessage({
-    action: ACTIONS.CAPTURE_RESULT,
-    reelId,
-    error,
-  });
+  chrome.runtime.sendMessage({ action: ACTIONS.CAPTURE_RESULT, reelId, error });
 }

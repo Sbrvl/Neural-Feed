@@ -17,6 +17,7 @@ Deploy to HuggingFace Spaces:
   5. Unset MOCK_TRIBE when switching to real inference
 """
 
+import asyncio
 import os
 import uuid
 import base64
@@ -173,29 +174,67 @@ async def analyze(
     return JSONResponse(result)
 
 
+FFMPEG_BIN = '/home/ec2-user/ffmpeg-7.0.2-amd64-static/ffmpeg'
+
+
+def transcode_to_mp4(src: str) -> str:
+    """
+    Chrome MediaRecorder webm files have Duration: N/A which breaks moviepy.
+    Transcode to mp4 so ffmpeg/moviepy can read duration and frames correctly.
+    Returns path to the mp4 (caller must delete it).
+    """
+    import subprocess
+    dst = src.replace('.webm', '.mp4')
+    result = subprocess.run(
+        [FFMPEG_BIN, '-y', '-i', src, '-c:v', 'libx264', '-c:a', 'aac',
+         '-movflags', '+faststart', dst],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        logger.warning(f"ffmpeg transcode failed: {result.stderr.decode()[:300]}")
+        return src  # Fall back to original; TRIBE may still handle it
+    logger.info(f"Transcoded {src} → {dst}")
+    return dst
+
+
 async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
     """Run TRIBE v2 inference + parcellation + nilearn viewer generation."""
+    import subprocess
     from parcellation import compute_network_scores
 
     model = get_model()
 
+    # Chrome webm files have no duration header — transcode to mp4 first.
+    mp4_path = await asyncio.get_event_loop().run_in_executor(
+        None, transcode_to_mp4, video_path
+    )
+    input_path = mp4_path
+
     # ── TRIBE v2 inference ──
-    logger.info(f"Running TRIBE v2 inference on {video_path}...")
+    logger.info(f"Running TRIBE v2 inference on {input_path}...")
     try:
-        # Full inference: video file contains audio; TRIBE auto-transcribes for text modal.
-        events_df = model.get_events_dataframe(video_path=video_path)
+        events_df = model.get_events_dataframe(video_path=input_path)
         preds, segments = model.predict(events=events_df)
         logger.info(f"TRIBE preds.shape={preds.shape}")
     except Exception as e:
-        logger.warning(f"Inference failed with full model ({e}). Retrying without text modality...")
+        logger.warning(f"Inference failed with full model ({e}). Retrying audio-only...")
         try:
-            # Fallback: pass audio_path explicitly from the video to skip LLaMA transcription.
-            # The video_path alone omits text events — LLaMA OOM is the most common failure.
-            events_df = model.get_events_dataframe(video_path=video_path, audio_path=video_path)
+            # Extract audio to wav and pass only audio_path (skips LLaMA transcription).
+            audio_path = video_path.replace('.webm', '.wav')
+            subprocess.run(
+                [FFMPEG_BIN, '-y', '-i', input_path, '-vn', '-acodec', 'pcm_s16le', audio_path],
+                capture_output=True,
+            )
+            events_df = model.get_events_dataframe(audio_path=audio_path)
             preds, segments = model.predict(events=events_df)
-            logger.info(f"Fallback inference succeeded. preds.shape={preds.shape}")
+            logger.info(f"Audio-only inference succeeded. preds.shape={preds.shape}")
         except Exception as e2:
             raise RuntimeError(f"TRIBE inference failed: {e2}") from e2
+        finally:
+            Path(audio_path).unlink(missing_ok=True)
+    finally:
+        if mp4_path != video_path:
+            Path(mp4_path).unlink(missing_ok=True)
 
     # Convert to numpy if needed
     if hasattr(preds, 'numpy'):

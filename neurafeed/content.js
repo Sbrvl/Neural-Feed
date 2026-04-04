@@ -1,153 +1,91 @@
-// content.js — Reel detection for Instagram, TikTok, YouTube Shorts
+// content.js — Reel change detector for Instagram, TikTok, YouTube Shorts
 // Injected into matching pages by manifest.json content_scripts.
-// Detects when a reel enters the viewport and messages the service worker.
+//
+// Responsibilities:
+//   - Detect when the user scrolls to a new reel (URL change or video visibility)
+//   - Send REEL_CHANGED to service_worker.js
+//   - Do NOT start or stop capture directly — that's the SW's job
+//
+// ┌─────────────────────────────────────────────────────────┐
+// │  DETECTION STRATEGY (per platform)                      │
+// │                                                         │
+// │  Instagram / YouTube Shorts                             │
+// │    URL changes per reel → setInterval URL poll          │
+// │                                                         │
+// │  TikTok                                                 │
+// │    URL stays the same → IntersectionObserver on <video> │
+// │    (fires when next video enters viewport at ≥80%)      │
+// │                                                         │
+// │  All platforms                                          │
+// │    MutationObserver watches for new <video> elements    │
+// │    added by infinite scroll                             │
+// └─────────────────────────────────────────────────────────┘
 
 'use strict';
 
-// Platform-specific selectors and fallbacks.
-// Primary selectors use platform obfuscated class names — these WILL change.
-// Fallback selectors target semantic video elements and are more stable.
-const PLATFORMS = {
-  'instagram.com': {
-    selector: '.x1lliihq',
-    fallback: 'video[playsinline]',
-    pathCheck: () => window.location.pathname.includes('/reels/') ||
-                     window.location.pathname === '/' ||
-                     window.location.href.includes('instagram.com'),
-  },
-  'tiktok.com': {
-    selector: '[class*="DivVideoContainer"]',
-    fallback: 'video[autoplay]',
-    pathCheck: () => true,
-  },
-  'youtube.com': {
-    selector: 'ytd-reel-video-renderer',
-    fallback: 'video[src]',
-    pathCheck: () => window.location.pathname === '/shorts/' ||
-                     window.location.pathname.startsWith('/shorts/'),
-  },
-};
+console.log('[NeuralFeed] content.js loaded on', window.location.href);
 
-// Detect current platform from hostname
-function detectPlatform() {
-  const host = window.location.hostname.replace('www.', '');
-  for (const [key, config] of Object.entries(PLATFORMS)) {
-    if (host.includes(key) && config.pathCheck()) return { key, config };
-  }
-  return null;
+// ─── Reel change debounce ─────────────────────────────────────────────────────
+// Prevents duplicate REEL_CHANGED messages when:
+//   - TikTok briefly shows two videos at ≥80% visibility during a scroll
+//   - URL polling fires while IntersectionObserver also fires
+//   - Rapid scroll causes multiple URL changes within 1s
+
+let lastUrl = location.href;
+let reelChangeCooldown = false;
+
+function fireReelChanged() {
+  if (reelChangeCooldown) return;
+  reelChangeCooldown = true;
+  setTimeout(() => { reelChangeCooldown = false; }, 1000); // 1s debounce
+  console.log('[NeuralFeed] REEL_CHANGED fired', location.href);
+  chrome.runtime.sendMessage({ action: ACTIONS.REEL_CHANGED }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.log('[NeuralFeed] REEL_CHANGED lastError:', chrome.runtime.lastError.message);
+    } else {
+      console.log('[NeuralFeed] REEL_CHANGED response from SW:', JSON.stringify(response));
+    }
+  });
 }
 
-const platform = detectPlatform();
-if (!platform) {
-  // Not a supported page — do nothing
-  // (content_scripts matches are broad; exit gracefully on non-reel pages)
-} else {
-  let currentReelId = null;
-  let currentReelElement = null;
-  let mutationCount = 0;
-  let noMutationWarningTimer = null;
+// ─── URL polling — Instagram Reels + YouTube Shorts ──────────────────────────
+// Instagram and YouTube Shorts change the URL with each reel. Poll every 500ms.
 
-  // Generate a unique ID for each reel we detect
-  function generateReelId() {
-    return `${platform.key}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+setInterval(() => {
+  if (location.href !== lastUrl) {
+    lastUrl = location.href;
+    fireReelChanged();
   }
+}, 500);
 
-  // Called when a new reel becomes fully visible (≥80% in viewport)
-  function onReelVisible(reelElement) {
-    const reelId = generateReelId();
-    currentReelId = reelId;
-    currentReelElement = reelElement;
-    chrome.runtime.sendMessage({
-      action: ACTIONS.START_CAPTURE,
-      reelId,
-      platform: platform.key,
-      url: window.location.href,
-    });
-  }
+// ─── IntersectionObserver — TikTok ───────────────────────────────────────────
+// TikTok keeps the same URL across reels. Trigger REEL_CHANGED when a new
+// <video> element enters the viewport at ≥80% visibility.
 
-  // Called when the current reel exits view (next reel replacing it)
-  function onReelHidden() {
-    if (currentReelId) {
-      chrome.runtime.sendMessage({
-        action: ACTIONS.STOP_CAPTURE,
-        reelId: currentReelId,
-      });
-      currentReelId = null;
-      currentReelElement = null;
+const intersectionObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.isIntersecting && entry.intersectionRatio >= 0.8) {
+      fireReelChanged();
     }
   }
+}, { threshold: [0.8] });
 
-  // IntersectionObserver: fires when reel container crosses ≥80% visibility threshold
-  const intersectionObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && entry.intersectionRatio >= 0.8) {
-          onReelVisible(entry.target);
-        } else if (!entry.isIntersecting && entry.target === currentReelElement) {
-          // Only stop capture when the currently-active reel leaves view
-          onReelHidden();
-        }
-      }
-    },
-    { threshold: [0.8] }
-  );
-
-  // Track already-observed elements to avoid double-observing
-  const observedElements = new WeakSet();
-
-  function observeReelElement(el) {
-    if (!observedElements.has(el)) {
-      observedElements.add(el);
-      intersectionObserver.observe(el);
+// Track observed elements to avoid double-observing the same video
+function observeVideos() {
+  document.querySelectorAll('video').forEach((v) => {
+    if (!v._nfObserved) {
+      v._nfObserved = true;
+      intersectionObserver.observe(v);
     }
-  }
-
-  // Find and observe reel elements using primary selector, fall back to video elements
-  function findAndObserveReels() {
-    const { selector, fallback } = platform.config;
-
-    let elements = document.querySelectorAll(selector);
-    if (elements.length === 0) {
-      elements = document.querySelectorAll(fallback);
-      if (elements.length > 0) {
-        console.warn(
-          `[NeuralFeed] Primary selector "${selector}" found 0 elements. ` +
-          `Using fallback "${fallback}". The platform may have updated its DOM. ` +
-          `Please report at github.com/YOUR_REPO/issues`
-        );
-      }
-    }
-    elements.forEach(observeReelElement);
-  }
-
-  // MutationObserver: watches for new reel containers added to the DOM
-  // (Instagram/TikTok load reels dynamically as you scroll)
-  const mutationObserver = new MutationObserver((mutations) => {
-    mutationCount += mutations.length;
-    findAndObserveReels();
   });
-
-  mutationObserver.observe(document.body, {
-    childList: true,
-    subtree: true,
-  });
-
-  // Initial scan for any reels already in the DOM
-  findAndObserveReels();
-
-  // Watchdog: if no mutations fire in 30 seconds, the selector may be broken
-  function resetNoMutationWarning() {
-    clearTimeout(noMutationWarningTimer);
-    noMutationWarningTimer = setTimeout(() => {
-      if (mutationCount === 0) {
-        console.warn(
-          `[NeuralFeed] No DOM mutations detected in 30 seconds on ${platform.key}. ` +
-          `Reel detection may not be working. Check the platform's DOM structure.`
-        );
-      }
-      mutationCount = 0;
-      resetNoMutationWarning();
-    }, 30_000);
-  }
-  resetNoMutationWarning();
 }
+
+// Observe any videos already in the DOM on script load
+observeVideos();
+
+// ─── MutationObserver — infinite scroll ──────────────────────────────────────
+// Instagram, TikTok, and YouTube Shorts all add video elements dynamically
+// as the user scrolls. Watch for new <video> tags and observe them.
+
+new MutationObserver(observeVideos)
+  .observe(document.body, { childList: true, subtree: true });

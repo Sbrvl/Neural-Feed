@@ -1,443 +1,204 @@
-// popup.js — Extension popup logic
-// Handles: score display, 3D brain viewer, timeseries animation, share card
+// popup.js — Extension popup for NeuralFeed session mode
+//
+// State flow:
+//   1. On open: GET_SESSION_STATE → renderPopup(state)
+//   2. User clicks START/STOP → send START_SESSION / STOP_SESSION → renderPopup on response
+//   3. SW pushes SESSION_UPDATE while popup is open → renderPopup(msg.state)
 
 'use strict';
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── Module-level session state ───────────────────────────────────────────────
+// Set from GET_SESSION_STATE response and SESSION_UPDATE messages.
+// Never assumed from thin air.
 
-let currentResult = null;
-let animationInterval = null;
-let animationFrame = 0;
-let isAnimating = false;
+let sessionActive = false;
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
-const mainContent = document.getElementById('mainContent');
-const statusBadge = document.getElementById('statusBadge');
+const toggleBtn    = document.getElementById('toggleBtn');
+const errorBanner  = document.getElementById('errorBanner');
+const waitingCard  = document.getElementById('waitingCard');
+const sessionCard  = document.getElementById('sessionCard');
+const reelCountEl  = document.getElementById('reelCount');
+const lastReelEl   = document.getElementById('lastReelContent');
 const dashboardBtn = document.getElementById('dashboardBtn');
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── Render ───────────────────────────────────────────────────────────────────
 
-async function init() {
-  // Load last result from storage (if popup was closed and reopened)
-  const { lastResult } = await chrome.storage.local.get('lastResult');
-  if (lastResult) renderResult(lastResult);
+function renderPopup(state) {
+  if (!state) return;
+  sessionActive = state.active || false;
 
-  // Listen for new results pushed by service_worker.js
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message.action === ACTIONS.ANALYSIS_COMPLETE) {
-      setStatus('DONE', 'done');
-      renderResult(message.result);
-    }
-    if (message.action === ACTIONS.ANALYSIS_ERROR) {
-      setStatus('ERROR', 'done');
-      renderError(message.error);
-    }
-    if (message.action === ACTIONS.START_CAPTURE) {
-      setStatus('ANALYZING', 'analyzing');
-      renderLoading();
-    }
-  });
-
-  dashboardBtn.addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
-  });
-}
-
-function setStatus(text, cls) {
-  statusBadge.textContent = text;
-  statusBadge.className = `topbar-badge ${cls}`;
-}
-
-// ─── Loading state ────────────────────────────────────────────────────────────
-
-function renderLoading() {
-  stopAnimation();
-  mainContent.innerHTML = `
-    <div class="card loading-card">
-      <div class="loading-spinner"></div>
-      <div class="loading-text">Analyzing with TRIBE v2...</div>
-      <div class="loading-subtext">(~15–30s — real fMRI prediction running)</div>
-    </div>`;
-}
-
-// ─── Error state ──────────────────────────────────────────────────────────────
-
-function renderError(errorMsg) {
-  stopAnimation();
-  mainContent.innerHTML = `
-    <div class="card error-card">
-      <div class="error-text">Analysis failed</div>
-      <div class="error-detail">${escapeHtml(String(errorMsg).slice(0, 300))}</div>
-    </div>
-    <div class="card waiting-card" style="margin-top:0">
-      <div class="waiting-text">Watch another reel to try again.</div>
-    </div>`;
-}
-
-// ─── Main result render ───────────────────────────────────────────────────────
-
-function renderResultCore(result) {
-  stopAnimation();
-  currentResult = result;
-
-  const { brain_rot, dmn, fpn, reward, visual, somatomotor, viewer_html, timeseries, platform } = result;
-
-  // Clamp and round brain rot score for display
-  const score = Math.max(0, Math.round(brain_rot * 10) / 10);
-  const scoreClass = score <= SCORE_THRESHOLDS.GREEN_MAX ? 'green'
-    : score <= SCORE_THRESHOLDS.YELLOW_MAX ? 'yellow' : 'red';
-  const scoreLabel = score <= SCORE_THRESHOLDS.GREEN_MAX ? 'Active engagement'
-    : score <= SCORE_THRESHOLDS.YELLOW_MAX ? 'Mixed engagement'
-    : 'Passive consumption';
-
-  const platformTag = platform ? `<span class="platform-tag">${platform}</span>` : '';
-
-  // Max network value for bar scaling (use 1 as floor to avoid 0-division)
-  const maxNet = Math.max(dmn, fpn, reward, visual, somatomotor, 1);
-
-  mainContent.innerHTML = `
-    <!-- Score card -->
-    <div id="scoreCardEl" class="card score-card">
-      <div class="score-number ${scoreClass}" id="scoreDisplay">${score}</div>
-      <div class="score-info">
-        <div class="score-label">Brain Rot Score${platformTag}</div>
-        <div class="score-title">${scoreLabel}</div>
-        <div class="score-subtitle">(reward + DMN) / FPN</div>
-        <span class="score-disclaimer"
-          title="Predictions are for the population-average brain response, not your individual brain activity.">
-          ⓘ Population average — not personal
-        </span>
-      </div>
-    </div>
-
-    <!-- Network bars -->
-    <div class="card">
-      <div class="section-title">Network Activation</div>
-      ${networkBar('Default Mode (DMN)', dmn, maxNet, 'bar-dmn')}
-      ${networkBar('Reward Circuit', reward, maxNet, 'bar-reward')}
-      ${networkBar('Frontoparietal (FPN)', fpn, maxNet, 'bar-fpn')}
-      ${networkBar('Visual Cortex', visual, maxNet, 'bar-visual')}
-      ${networkBar('Somatomotor', somatomotor, maxNet, 'bar-somatomotor')}
-    </div>
-
-    <!-- 3D Brain viewer -->
-    <div class="card brain-viewer-card" id="brainViewerCard">
-      ${viewer_html
-        ? `<iframe id="brainIframe" sandbox="allow-scripts allow-same-origin"
-             srcdoc="${escapeAttr(viewer_html)}"
-             loading="lazy"></iframe>`
-        : `<div class="brain-viewer-placeholder">3D brain viewer unavailable</div>`}
-    </div>
-
-    <!-- Timeseries sparkline -->
-    ${timeseries && timeseries.length > 0 ? `
-    <div class="card" id="sparklineCard">
-      <div class="section-title">Activation Over Time</div>
-      <canvas id="sparklineCanvas" class="sparkline-canvas" width="388" height="80"></canvas>
-      <div class="sparkline-legend">
-        <div class="legend-item"><div class="legend-dot" style="background:#4285f4"></div>DMN</div>
-        <div class="legend-item"><div class="legend-dot" style="background:#ea4335"></div>Reward</div>
-        <div class="legend-item"><div class="legend-dot" style="background:#34a853"></div>FPN</div>
-      </div>
-      <div class="animation-controls">
-        <button class="anim-btn" id="animToggle">⏸ Pause</button>
-        <span class="anim-time" id="animTime">t=0s</span>
-      </div>
-    </div>` : ''}
-  `;
-
-  // Start animation if timeseries is available
-  if (timeseries && timeseries.length > 0) {
-    startAnimation(timeseries);
-    document.getElementById('animToggle').addEventListener('click', toggleAnimation);
-  }
-
-  // Popup memory check — if the iframe causes issues, offer sidePanel fallback
-  const iframe = document.getElementById('brainIframe');
-  if (iframe) {
-    iframe.addEventListener('error', () => offerSidePanel());
-    // Rough memory check: if popup becomes unresponsive within 2s, bail
-    setTimeout(() => {
-      if (!document.body.offsetHeight) offerSidePanel();
-    }, 2000);
-  }
-}
-
-function networkBar(label, value, max, colorClass) {
-  const pct = Math.min(100, Math.round((value / max) * 100));
-  const display = value.toFixed(2);
-  return `
-    <div class="network-row">
-      <span class="network-label">${label}</span>
-      <div class="network-bar-bg">
-        <div class="network-bar-fill ${colorClass}" id="bar-${colorClass}" style="width:${pct}%"></div>
-      </div>
-      <span class="network-value">${display}</span>
-    </div>`;
-}
-
-// ─── Timeseries animation ─────────────────────────────────────────────────────
-// Animates at ~2fps to match approximate fMRI TR (repetition time).
-// Each frame: [dmn, fpn, reward, visual, somatomotor, brain_rot] normalized values.
-
-function startAnimation(timeseries) {
-  animationFrame = 0;
-  isAnimating = true;
-  const canvas = document.getElementById('sparklineCanvas');
-  if (!canvas) return;
-
-  // Draw static sparkline first
-  drawSparkline(canvas, timeseries, 0);
-
-  animationInterval = setInterval(() => {
-    if (!isAnimating) return;
-    animationFrame = (animationFrame + 1) % timeseries.length;
-    drawSparkline(canvas, timeseries, animationFrame);
-    updateLiveNetworkBars(timeseries[animationFrame]);
-    const timeEl = document.getElementById('animTime');
-    if (timeEl) timeEl.textContent = `t=${animationFrame}s`;
-  }, 1000 / ANIMATION_FPS);
-}
-
-function stopAnimation() {
-  clearInterval(animationInterval);
-  animationInterval = null;
-  isAnimating = false;
-}
-
-function toggleAnimation() {
-  const btn = document.getElementById('animToggle');
-  if (isAnimating) {
-    isAnimating = false;
-    if (btn) btn.textContent = '▶ Play';
+  // Toggle button label and style
+  if (sessionActive) {
+    toggleBtn.textContent = '⏹ STOP RECORDING';
+    toggleBtn.classList.add('active');
   } else {
-    isAnimating = true;
-    if (btn) btn.textContent = '⏸ Pause';
+    toggleBtn.textContent = '▶ START RECORDING';
+    toggleBtn.classList.remove('active');
+  }
+
+  // Decide which card to show
+  const hasData = (state.reelCount > 0) || sessionActive || state.analysisInProgress;
+  waitingCard.style.display = hasData ? 'none' : '';
+  sessionCard.style.display = hasData ? '' : 'none';
+
+  if (!hasData) return;
+
+  // Reel count
+  reelCountEl.textContent = state.reelCount || 0;
+
+  // Rolling average bars (only meaningful once at least 1 reel has completed)
+  if (state.reelCount > 0) {
+    updateAvgBar('BrainRot', state.brain_rot, 10);
+    updateAvgBar('Dmn',      state.dmn,       10);
+    updateAvgBar('Fpn',      state.fpn,       10);
+    updateAvgBar('Reward',   state.reward,    10);
+  }
+
+  // Last reel section
+  if (state.lastReel) {
+    renderLastReel(state.lastReel);
+  } else if (sessionActive || state.analysisInProgress) {
+    lastReelEl.innerHTML = `
+      <div class="analyzing-row">
+        <div class="mini-spinner"></div>
+        <span>TRIBE v2 is analyzing your reels — results in 5-30 min. You can close this popup.</span>
+      </div>`;
+  } else {
+    lastReelEl.innerHTML = '';
   }
 }
 
-function drawSparkline(canvas, timeseries, currentFrame) {
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width;
-  const H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-
-  // Network indices in timeseries: [dmn, fpn, reward, visual, somatomotor, brain_rot]
-  const lines = [
-    { idx: 0, color: '#4285f4' }, // DMN
-    { idx: 2, color: '#ea4335' }, // Reward
-    { idx: 1, color: '#34a853' }, // FPN
-  ];
-
-  const n = timeseries.length;
-  if (n < 2) return;
-
-  // Find global max for normalization
-  let globalMax = 0.01;
-  for (const frame of timeseries) {
-    for (const v of frame.slice(0, 3)) {
-      if (v > globalMax) globalMax = v;
-    }
-  }
-
-  for (const { idx, color } of lines) {
-    ctx.beginPath();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < n; i++) {
-      const x = (i / (n - 1)) * W;
-      const y = H - (timeseries[i][idx] / globalMax) * (H - 8) - 4;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-
-  // Draw playhead cursor
-  const cursorX = (currentFrame / (n - 1)) * W;
-  ctx.beginPath();
-  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
-  ctx.moveTo(cursorX, 0);
-  ctx.lineTo(cursorX, H);
-  ctx.stroke();
-  ctx.setLineDash([]);
+function updateAvgBar(key, value, max) {
+  const barEl = document.getElementById(`avgBar${key}`);
+  const valEl = document.getElementById(`avgVal${key}`);
+  if (!barEl || !valEl) return;
+  const pct = value != null ? Math.min(100, (value / max) * 100) : 0;
+  barEl.style.width = `${pct.toFixed(1)}%`;
+  valEl.textContent = value != null ? value.toFixed(1) : '—';
 }
 
-function updateLiveNetworkBars(frame) {
-  // frame = [dmn, fpn, reward, visual, somatomotor, brain_rot]
-  if (!frame) return;
-  const [dmn, fpn, reward, visual, somatomotor] = frame;
-  const max = Math.max(dmn, fpn, reward, visual, somatomotor, 0.01);
-  const updates = [
-    ['bar-bar-dmn', dmn / max],
-    ['bar-bar-reward', reward / max],
-    ['bar-bar-fpn', fpn / max],
-    ['bar-bar-visual', visual / max],
-    ['bar-bar-somatomotor', somatomotor / max],
-  ];
-  for (const [id, ratio] of updates) {
-    const el = document.getElementById(id);
-    if (el) el.style.width = `${Math.round(ratio * 100)}%`;
-  }
-}
+function renderLastReel(result) {
+  const { brain_rot, dmn, fpn, reward, platform } = result;
+  const score = Math.max(0, Math.round((brain_rot || 0) * 10) / 10);
+  const scoreClass = score <= 4 ? 'green' : score <= 7 ? 'yellow' : 'red';
+  const scoreLabel = score <= 4 ? 'Active engagement'
+                   : score <= 7 ? 'Mixed engagement'
+                   : 'Passive consumption';
+  const platformTag = platform
+    ? `<span class="last-score-platform">${escapeHtml(platform)}</span>`
+    : '';
 
-// ─── Side panel fallback ──────────────────────────────────────────────────────
+  // Scale the mini network bars relative to each other
+  const maxNet = Math.max(dmn || 0, fpn || 0, reward || 0, 0.01);
 
-function offerSidePanel() {
-  const card = document.getElementById('brainViewerCard');
-  if (!card) return;
-  card.innerHTML = `
-    <div class="brain-viewer-placeholder" style="flex-direction:column;gap:8px;">
-      <div>3D viewer needs more space</div>
-      <button class="action-btn" onclick="openSidePanel()" style="width:auto;padding:6px 16px">
-        Open in side panel
-      </button>
+  lastReelEl.innerHTML = `
+    <div class="last-reel-score">
+      <div class="last-score-number ${scoreClass}">${score}</div>
+      <div class="last-score-info">
+        <div class="last-score-label">Brain Rot Score</div>
+        <div class="last-score-title">${escapeHtml(scoreLabel)}</div>
+        ${platformTag}
+      </div>
+    </div>
+    <div class="network-row">
+      <span class="network-label">DMN</span>
+      <div class="network-bar-bg">
+        <div class="network-bar-fill bar-dmn" style="width:${pct(dmn, maxNet)}%"></div>
+      </div>
+      <span class="network-value">${fmt(dmn)}</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">FPN</span>
+      <div class="network-bar-bg">
+        <div class="network-bar-fill bar-fpn" style="width:${pct(fpn, maxNet)}%"></div>
+      </div>
+      <span class="network-value">${fmt(fpn)}</span>
+    </div>
+    <div class="network-row">
+      <span class="network-label">Reward</span>
+      <div class="network-bar-bg">
+        <div class="network-bar-fill bar-reward" style="width:${pct(reward, maxNet)}%"></div>
+      </div>
+      <span class="network-value">${fmt(reward)}</span>
     </div>`;
 }
 
-function openSidePanel() {
-  chrome.runtime.sendMessage({ action: ACTIONS.OPEN_SIDE_PANEL });
+function pct(val, max) { return Math.min(100, ((val || 0) / max) * 100).toFixed(1); }
+function fmt(val)      { return val != null ? val.toFixed(2) : '—'; }
+
+// ─── Error display ─────────────────────────────────────────────────────────────
+
+function showError(msg) {
+  errorBanner.textContent = msg || 'Something went wrong.';
+  errorBanner.style.display = '';
+  setTimeout(() => { errorBanner.style.display = 'none'; }, 5000);
 }
 
-// ─── Share card ────────────────────────────────────────────────────────────────
-// html2canvas cannot capture srcdoc iframes.
-// Share card uses: score number + network bars + brain_png_b64 from server.
-
-async function exportShareCard() {
-  if (!currentResult) return;
-
-  const { brain_rot, dmn, fpn, reward, brain_png_b64 } = currentResult;
-  const score = Math.max(0, Math.round(brain_rot * 10) / 10);
-  const scoreClass = score <= SCORE_THRESHOLDS.GREEN_MAX ? '#34a853'
-    : score <= SCORE_THRESHOLDS.YELLOW_MAX ? '#fbbc04' : '#ea4335';
-
-  const canvas = document.createElement('canvas');
-  canvas.width = 1200;
-  canvas.height = 630;
-  const ctx = canvas.getContext('2d');
-
-  // Background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, 1200, 630);
-
-  // Left panel background
-  ctx.fillStyle = '#1a73e8';
-  ctx.fillRect(0, 0, 420, 630);
-
-  // Score
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 120px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(score.toString(), 210, 260);
-
-  ctx.font = '24px sans-serif';
-  ctx.fillText('Brain Rot Score', 210, 310);
-
-  ctx.font = '18px sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  ctx.fillText('Powered by Meta TRIBE v2', 210, 380);
-  ctx.fillText('Population average response', 210, 408);
-
-  // Right panel: network bars
-  const barY = [120, 190, 260, 330, 400];
-  const barLabels = ['DMN', 'Reward', 'FPN', 'Visual', 'Somatomotor'];
-  const barValues = [dmn, fpn, reward, currentResult.visual, currentResult.somatomotor];
-  const barColors = ['#4285f4', '#ea4335', '#34a853', '#fbbc04', '#00bcd4'];
-  const barMax = Math.max(...barValues, 0.01);
-
-  ctx.font = 'bold 18px sans-serif';
-  ctx.fillStyle = '#5f6368';
-  ctx.textAlign = 'left';
-  ctx.fillText('NETWORK ACTIVATION', 500, 80);
-
-  for (let i = 0; i < 5; i++) {
-    const y = barY[i];
-    ctx.fillStyle = '#202124';
-    ctx.font = '16px sans-serif';
-    ctx.fillText(barLabels[i], 500, y);
-
-    // Bar background
-    ctx.fillStyle = '#e8eaed';
-    ctx.beginPath();
-    ctx.roundRect(500, y + 8, 500, 20, 4);
-    ctx.fill();
-
-    // Bar fill
-    ctx.fillStyle = barColors[i];
-    ctx.beginPath();
-    ctx.roundRect(500, y + 8, (barValues[i] / barMax) * 500, 20, 4);
-    ctx.fill();
-
-    ctx.fillStyle = '#5f6368';
-    ctx.font = '13px sans-serif';
-    ctx.fillText(barValues[i].toFixed(2), 1010, y + 22);
-  }
-
-  // Brain image if available
-  if (brain_png_b64) {
-    await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        ctx.drawImage(img, 500, 450, 200, 150);
-        resolve();
-      };
-      img.onerror = resolve;
-      img.src = `data:image/png;base64,${brain_png_b64}`;
-    });
-  }
-
-  // Footer
-  ctx.fillStyle = '#9aa0a6';
-  ctx.font = '14px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('NeuralFeed — Real fMRI brain encoding for social media', 600, 600);
-
-  // Download
-  const link = document.createElement('a');
-  link.download = `neurafeed-brain-rot-${Date.now()}.png`;
-  link.href = canvas.toDataURL('image/png');
-  link.click();
+function hideError() {
+  errorBanner.style.display = 'none';
 }
 
-// ─── Action row (appended after render) ──────────────────────────────────────
+// ─── Button handler ────────────────────────────────────────────────────────────
 
-function appendActions() {
-  if (!currentResult) return;
-  const existing = document.getElementById('actionRow');
-  if (existing) existing.remove();
-
-  const row = document.createElement('div');
-  row.id = 'actionRow';
-  row.className = 'action-row';
-  row.innerHTML = `
-    <button class="action-btn" id="shareBtn">⬇ Save brain card</button>
-    <button class="action-btn primary" id="historyBtn">📊 History</button>
-  `;
-  document.body.appendChild(row);
-
-  document.getElementById('shareBtn').addEventListener('click', exportShareCard);
-  document.getElementById('historyBtn').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+toggleBtn.addEventListener('click', () => {
+  hideError();
+  const action = sessionActive ? ACTIONS.STOP_SESSION : ACTIONS.START_SESSION;
+  chrome.runtime.sendMessage({ action }, (resp) => {
+    if (chrome.runtime.lastError) {
+      showError('Could not reach extension background. Try reloading the extension.');
+      return;
+    }
+    if (resp && resp.error) {
+      showError(resp.error);
+      return;
+    }
+    // Optimistically flip the button while we wait for SESSION_UPDATE
+    if (action === ACTIONS.START_SESSION) {
+      sessionActive = true;
+      toggleBtn.textContent = '⏹ STOP RECORDING';
+      toggleBtn.classList.add('active');
+      // Show session card with 0 reels / Analyzing...
+      renderPopup({ active: true, reelCount: 0, lastReel: null });
+    } else {
+      sessionActive = false;
+      toggleBtn.textContent = '▶ START RECORDING';
+      toggleBtn.classList.remove('active');
+    }
   });
-}
+});
 
-function renderResult(result) {
-  renderResultCore(result);
-  appendActions();
-}
+// ─── Dashboard button ──────────────────────────────────────────────────────────
+
+dashboardBtn.addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+});
+
+// ─── Live updates from SW ──────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === ACTIONS.SESSION_UPDATE) {
+    renderPopup(msg.state);
+  }
+  if (msg.action === ACTIONS.ANALYSIS_ERROR) {
+    showError(`Analysis failed: ${msg.error || 'unknown error'}`);
+  }
+});
+
+// ─── Init: hydrate from SW on popup open ──────────────────────────────────────
+
+chrome.runtime.sendMessage({ action: ACTIONS.GET_SESSION_STATE }, (resp) => {
+  if (chrome.runtime.lastError || !resp) return; // SW not ready yet
+  renderPopup(resp);
+});
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
-
-function escapeAttr(str) {
-  return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// ─── Boot ─────────────────────────────────────────────────────────────────────
-
-init();
