@@ -157,27 +157,47 @@ def mock_response(reel_id: str) -> dict:
     visual_ts = (np.sin(t * 2) * 0.7 + 0.2).tolist()
     somot_ts  = (np.cos(t * 0.8) * 0.5 + 0.1).tolist()
 
-    timeseries = [
-        [dmn_ts[i], fpn_ts[i], reward_ts[i], visual_ts[i], somot_ts[i],
-         (reward_ts[i] + dmn_ts[i]) / max(fpn_ts[i], 0.01)]
-        for i in range(n_frames)
-    ]
-
     dmn    = float(np.mean(dmn_ts))
     fpn    = float(np.mean(fpn_ts))
     reward = float(np.mean(reward_ts))
     visual = float(np.mean(visual_ts))
     somot  = float(np.mean(somot_ts))
-    brain_rot = (reward + dmn) / max(fpn, 0.01)
+    health_score = 72.0
+    brain_rot = round(10.0 - health_score / 10.0, 2)
+    timeseries = [
+        [dmn_ts[i], fpn_ts[i], reward_ts[i], visual_ts[i], somot_ts[i], brain_rot]
+        for i in range(n_frames)
+    ]
 
     return {
         'reel_id':      reel_id,
         'dmn':          dmn,
         'fpn':          fpn,
+        'salience':     reward,
         'reward':       reward,
         'visual':       visual,
         'somatomotor':  somot,
         'brain_rot':    brain_rot,
+        'health_score': health_score,
+        'enrichment_score': health_score,
+        'passive_risk': round(brain_rot * 10.0, 1),
+        'dominant_pattern': 'Focused / task-positive engagement',
+        'correlation':  -0.41,
+        'modality':     'mock',
+        'metrics':      {
+            'network_coordination': 0.66,
+            'control_share': 0.62,
+            'cognitive_dynamism': 0.58,
+            'internal_control_balance': 0.61,
+            'sensory_dominance': 0.39,
+            'sensory_fragmentation': 0.33,
+            'salience_capture': 0.31,
+            'coupling_strength': 0.66,
+            'narrative_complexity': 0.58,
+            'sensory_exec_ratio': 0.39,
+            'sensory_chaos': 0.33,
+            'hijack_index': 0.31,
+        },
         'viewer_html':  '<html><body style="background:#1a1a2e;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><p style="color:#4285f4;font-family:sans-serif;font-size:18px">🧠 Mock brain viewer — replace with real nilearn output</p></body></html>',
         'brain_png_b64': '',
         'timeseries':   timeseries,
@@ -293,7 +313,7 @@ async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
     preds = np.array(preds, dtype=np.float32)
 
     # ── Network scores via Schaefer 200 + Tian parcellation ──
-    scores = compute_network_scores(preds)
+    scores = compute_network_scores(preds, modality='audio')
 
     # ── 3D interactive brain viewer (nilearn) ──
     viewer_html = generate_brain_viewer(preds)
@@ -305,17 +325,22 @@ async def run_tribe_inference(video_path: str, reel_id: str) -> dict:
         'reel_id':          reel_id,
         'dmn':              scores['dmn'],
         'fpn':              scores['fpn'],
+        'salience':         scores['salience'],
         'reward':           scores['reward'],
         'visual':           scores['visual'],
         'somatomotor':      scores['somatomotor'],
         'brain_rot':        scores['brain_rot'],
         'dominant_pattern': scores['dominant_pattern'],
         'health_score':     scores['health_score'],
+        'enrichment_score': scores['enrichment_score'],
+        'passive_risk':     scores['passive_risk'],
         'correlation':      scores['correlation'],
+        'modality':         scores['modality'],
         'metrics':          scores['metrics'],
         'viewer_html':      viewer_html,
         'brain_png_b64':    brain_png_b64,
         'timeseries':       scores['timeseries'],
+        'scientific_basis': scores['scientific_basis'],
         'mock':             False,
     }
 

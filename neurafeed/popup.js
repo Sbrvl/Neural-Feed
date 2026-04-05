@@ -29,10 +29,11 @@ function renderPopup(state) {
   if (state.reelCount > 0) {
     // Guard against old-scale data (brain_rot was 0-100 before the scoring fix)
     const br = (state.brain_rot || 0) > 10 ? state.brain_rot / 10 : (state.brain_rot || 0);
+    const salience = state.salience ?? state.reward;
     updateAvgBar('BrainRot', br,                  10);
     updateAvgBar('Dmn',      state.dmn,           10);
     updateAvgBar('Fpn',      state.fpn,           10);
-    updateAvgBar('Reward',   state.reward,        10);
+    updateAvgBar('Reward',   salience,            10);
     updateAvgBar('Visual',   state.visual,        10);
     updateAvgBar('Somot',    state.somatomotor,   10);
   }
@@ -60,8 +61,9 @@ function updateAvgBar(key, value, max) {
 }
 
 function renderLastReel(result) {
-  let { brain_rot, dmn, fpn, reward, visual, somatomotor,
+  let { brain_rot, dmn, fpn, salience, reward, visual, somatomotor,
         dominant_pattern, platform, metrics } = result;
+  salience = salience ?? reward;
 
   // Guard against old-scale data (brain_rot was 0-100 before the fix)
   if (brain_rot > 10) brain_rot = brain_rot / 10;
@@ -79,17 +81,17 @@ function renderLastReel(result) {
     ? `<span class="last-score-platform">${escapeHtml(platform)}</span>` : '';
 
   // Network bars — relative to their own max
-  const maxNet = Math.max(dmn||0, fpn||0, reward||0, visual||0, somatomotor||0, 0.01);
+  const maxNet = Math.max(dmn||0, fpn||0, salience||0, visual||0, somatomotor||0, 0.01);
 
   // Optional metrics badges
   let metricsBadges = '';
   if (metrics) {
     metricsBadges = `
       <div class="metrics-row">
-        <span class="metric-badge">Coupling <strong>${fmt(metrics.coupling_strength)}</strong></span>
-        <span class="metric-badge">Narr. Complexity <strong>${fmt(metrics.narrative_complexity)}</strong></span>
-        <span class="metric-badge">Hijack <strong>${fmt(metrics.hijack_index)}</strong></span>
-        <span class="metric-badge">Sens/Exec <strong>${fmt(metrics.sensory_exec_ratio)}</strong></span>
+        <span class="metric-badge">Coordination <strong>${fmt(metrics.network_coordination ?? metrics.coupling_strength)}</strong></span>
+        <span class="metric-badge">Cog. Dynamism <strong>${fmt(metrics.cognitive_dynamism ?? metrics.narrative_complexity)}</strong></span>
+        <span class="metric-badge">Salience Capture <strong>${fmt(metrics.salience_capture ?? metrics.hijack_index)}</strong></span>
+        <span class="metric-badge">Sensory Dominance <strong>${fmt(metrics.sensory_dominance ?? metrics.sensory_exec_ratio)}</strong></span>
       </div>`;
   }
 
@@ -114,9 +116,9 @@ function renderLastReel(result) {
       <span class="network-value">${fmt(fpn)}</span>
     </div>
     <div class="network-row">
-      <span class="network-label">Reward / Salience</span>
-      <div class="network-bar-bg"><div class="network-bar-fill bar-reward" style="width:${pct(reward,maxNet)}%"></div></div>
-      <span class="network-value">${fmt(reward)}</span>
+      <span class="network-label">Salience</span>
+      <div class="network-bar-bg"><div class="network-bar-fill bar-reward" style="width:${pct(salience,maxNet)}%"></div></div>
+      <span class="network-value">${fmt(salience)}</span>
     </div>
     <div class="network-row">
       <span class="network-label">Visual</span>

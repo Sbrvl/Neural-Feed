@@ -32,6 +32,7 @@ function normalise(history) {
   return history.filter(r => !r.mock).map(r => ({
     ...r,
     brain_rot: (r.brain_rot || 0) > 10 ? r.brain_rot / 10 : (r.brain_rot || 0),
+    salience: r.salience ?? r.reward ?? 0,
   }));
 }
 
@@ -73,7 +74,7 @@ function renderStats(history) {
 
   document.getElementById('statAvgDmn').textContent    = avg('dmn').toFixed(1);
   document.getElementById('statAvgFpn').textContent    = avg('fpn').toFixed(1);
-  document.getElementById('statAvgReward').textContent = avg('reward').toFixed(1);
+  document.getElementById('statAvgReward').textContent = avg('salience').toFixed(1);
   document.getElementById('statAvgVisual').textContent = avg('visual').toFixed(1);
   document.getElementById('statAvgSomot').textContent  = avg('somatomotor').toFixed(1);
 
@@ -137,7 +138,7 @@ function renderChart(history) {
               const r = last30[item.dataIndex];
               const lines = [`Brain Rot: ${item.raw}`];
               if (r.dominant_pattern) lines.push(`Pattern: ${r.dominant_pattern}`);
-              if (r.dmn != null) lines.push(`DMN: ${(r.dmn||0).toFixed(1)}  FPN: ${(r.fpn||0).toFixed(1)}  Reward: ${(r.reward||0).toFixed(1)}`);
+              if (r.dmn != null) lines.push(`DMN: ${(r.dmn||0).toFixed(1)}  FPN: ${(r.fpn||0).toFixed(1)}  Salience: ${(r.salience||0).toFixed(1)}`);
               return lines;
             },
           },
@@ -201,15 +202,15 @@ function renderTable(history) {
         <td><span class="score-pill ${scoreClass}">${score}</span></td>
         <td>${(r.dmn         ||0).toFixed(1)}</td>
         <td>${(r.fpn         ||0).toFixed(1)}</td>
-        <td>${(r.reward      ||0).toFixed(1)}</td>
+        <td>${(r.salience    ||0).toFixed(1)}</td>
         <td>${(r.visual      ||0).toFixed(1)}</td>
         <td>${(r.somatomotor ||0).toFixed(1)}</td>
         <td><span class="pattern-tag ${patternClass(pattern)}">${pattern || '—'}</span></td>
-        <td>${mval(m.coupling_strength)}</td>
-        <td>${mval(m.narrative_complexity)}</td>
-        <td>${mval(m.sensory_exec_ratio)}</td>
-        <td>${mval(m.sensory_chaos)}</td>
-        <td>${mval(m.hijack_index)}</td>
+        <td>${mval(m.network_coordination ?? m.coupling_strength)}</td>
+        <td>${mval(m.cognitive_dynamism ?? m.narrative_complexity)}</td>
+        <td>${mval(m.sensory_dominance ?? m.sensory_exec_ratio)}</td>
+        <td>${mval(m.sensory_fragmentation ?? m.sensory_chaos)}</td>
+        <td>${mval(m.salience_capture ?? m.hijack_index)}</td>
       </tr>`;
   }).join('');
 
@@ -222,15 +223,15 @@ function renderTable(history) {
           <th>Brain Rot (/10)</th>
           <th>DMN</th>
           <th>FPN</th>
-          <th>Reward</th>
+          <th>Salience</th>
           <th>Visual</th>
           <th>Somatomotor</th>
           <th>Pattern</th>
-          <th>Coupling</th>
-          <th>Narr. Complexity</th>
-          <th>Sens/Exec Ratio</th>
-          <th>Sens. Chaos</th>
-          <th>Hijack Index</th>
+          <th>Coordination</th>
+          <th>Cog. Dynamism</th>
+          <th>Sensory Dominance</th>
+          <th>Sensory Fragmentation</th>
+          <th>Salience Capture</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>

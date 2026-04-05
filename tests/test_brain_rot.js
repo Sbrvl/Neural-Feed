@@ -3,12 +3,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-// ── Brain rot score formula (matches parcellation.py + popup.js) ──────────────
+// ── Brain rot display mapping (matches parcellation.py + popup.js) ───────────
 
 const SCORE_THRESHOLDS = { GREEN_MAX: 4, YELLOW_MAX: 7 };
 
-function brainRotScore(reward, dmn, fpn) {
-  return (reward + dmn) / Math.max(fpn, 0.01);
+function brainRotScore(healthScore) {
+  return Math.max(0, Math.min(10, +(10 - (healthScore / 10)).toFixed(2)));
 }
 
 function scoreColor(score) {
@@ -19,31 +19,23 @@ function scoreColor(score) {
 
 // ─── Formula tests ────────────────────────────────────────────────────────────
 
-describe('brain rot score formula', () => {
+describe('brain rot score mapping', () => {
 
-  it('computes correct ratio for normal inputs', () => {
-    const score = brainRotScore(0.5, 0.8, 0.6);
-    expect(score).toBeCloseTo(1.3 / 0.6, 5);
+  it('maps health 100 to brain rot 0', () => {
+    expect(brainRotScore(100)).toBe(0);
   });
 
-  it('handles fpn=0 without throwing (floor at 0.01)', () => {
-    expect(() => brainRotScore(1, 1, 0)).not.toThrow();
-    const score = brainRotScore(1, 1, 0);
-    expect(score).toBe(200); // (1+1)/0.01
+  it('maps health 0 to brain rot 10', () => {
+    expect(brainRotScore(0)).toBe(10);
   });
 
-  it('equal networks give score of 2', () => {
-    expect(brainRotScore(1, 1, 1)).toBe(2);
+  it('maps health 72 to brain rot 2.8', () => {
+    expect(brainRotScore(72)).toBe(2.8);
   });
 
-  it('high FPN (active engagement) gives low score', () => {
-    const score = brainRotScore(0.1, 0.1, 2.0);
-    expect(score).toBeLessThan(1);
-  });
-
-  it('high reward + DMN, low FPN gives high score', () => {
-    const score = brainRotScore(2.0, 2.0, 0.1);
-    expect(score).toBeGreaterThan(10);
+  it('clips out-of-range health inputs', () => {
+    expect(brainRotScore(-20)).toBe(10);
+    expect(brainRotScore(140)).toBe(0);
   });
 
 });

@@ -1,46 +1,48 @@
 """
-parcellation.py — Schaefer 200 surface parcellation for TRIBE v2 output.
+parcellation.py - Aggregate TRIBE v2 cortical predictions into transparent,
+literature-informed engagement metrics.
 
-TRIBE v2 outputs predictions on the fsaverage5 cortical surface:
-  preds.shape = (n_timesteps, n_vertices)  where n_vertices = 20484 (10242 per hemisphere)
+What this file does:
+- Maps fsaverage5 vertex predictions onto large-scale cortical systems.
+- Derives composite metrics we can plausibly support from cortical outputs:
+  coordination, control-vs-sensory balance, cognitive dynamism,
+  sensory fragmentation, and salience capture.
+- Produces a backwards-compatible `brain_rot` display score while keeping the
+  internal interpretation honest: this is a literature-informed cortical proxy,
+  not a clinical measure and not a direct readout of dopamine, addiction,
+  nucleus accumbens activity, or individual brain health.
 
-Scoring model (NeuralFeed Brain Rot Score, 0–10):
-  Higher = more passive/brain-rotting content.  Lower = more engaging/healthy.
-
-  Six literature-grounded components:
-    (+health) Coupling Strength  — DMN↔TPN anti-correlation (Fox et al. 2005)
-    (+health) Network Magnitude  — overall activation level
-    (+health) Narrative Complexity — temporal variance in cognitive networks
-    (−health) Sensory-Executive Ratio — sensory flood with no executive brakes
-    (−health) Sensory Chaos       — visual/auditory volatility (jump cuts)
-    (−health) Hijack Index        — salience spikes × sensory load (Wang 2017)
-
-  raw_health ∈ [−0.45, +0.55]  →  health_0_100 ∈ [0, 100]
-  brain_rot = 10 − health_0_100 / 10   (inverted, 0–10 scale)
+Important limits:
+- TRIBE v2 predicts population-average cortical responses on fsaverage5.
+- The Schaefer 7-network atlas does not give us a clean language or auditory
+  system, so this model only uses networks we can defend from the atlas.
+- `reward` is retained as an API alias for cortical salience so the extension
+  stays compatible, but it should be read as salience / attention capture.
 """
+
+import logging
 
 import numpy as np
 from nilearn import datasets
-from pathlib import Path
-import logging
+
 
 logger = logging.getLogger(__name__)
 
-# ─── Atlas (cached after first call) ─────────────────────────────────────────
 
 _schaefer_labels_lh = None
 _schaefer_labels_rh = None
 _network_parcel_map = None
 _atlas_loaded = False
 
+
 SCHAEFER_NETWORK_PREFIXES = {
-    'dmn':         'Default',      # Schaefer uses 'Default', not 'DefaultMode'
-    'fpn':         'Cont',
-    'visual':      'Vis',
-    'somatomotor': 'SomMot',
-    'dorsal_attn': 'DorsAttn',
-    'limbic':      'Limbic',
-    'salience':    'SalVentAttn',
+    "dmn": "Default",
+    "fpn": "Cont",
+    "visual": "Vis",
+    "somatomotor": "SomMot",
+    "dorsal_attn": "DorsAttn",
+    "limbic": "Limbic",
+    "salience": "SalVentAttn",
 }
 
 
@@ -50,234 +52,306 @@ def _load_atlas():
         return
 
     logger.info("Loading Schaefer 200 fsaverage5 surface atlas...")
-    schaefer = datasets.fetch_atlas_schaefer_2018(n_rois=200, yeo_networks=7, resolution_mm=1)
-    fsavg5   = datasets.fetch_surf_fsaverage('fsaverage5')
+    schaefer = datasets.fetch_atlas_schaefer_2018(
+        n_rois=200,
+        yeo_networks=7,
+        resolution_mm=1,
+    )
+    fsavg5 = datasets.fetch_surf_fsaverage("fsaverage5")
 
     from nilearn.surface import vol_to_surf
-    lh = vol_to_surf(schaefer.maps, fsavg5['pial_left'],  interpolation='nearest_most_frequent')
-    rh = vol_to_surf(schaefer.maps, fsavg5['pial_right'], interpolation='nearest_most_frequent')
+
+    lh = vol_to_surf(
+        schaefer.maps,
+        fsavg5["pial_left"],
+        interpolation="nearest_most_frequent",
+    )
+    rh = vol_to_surf(
+        schaefer.maps,
+        fsavg5["pial_right"],
+        interpolation="nearest_most_frequent",
+    )
 
     _schaefer_labels_lh = np.round(lh).astype(int)
     _schaefer_labels_rh = np.round(rh).astype(int)
 
-    logger.info(
-        f"Loaded surface labels: LH {_schaefer_labels_lh.shape}, RH {_schaefer_labels_rh.shape}. "
-        f"Unique parcels: {len(np.unique(np.concatenate([_schaefer_labels_lh, _schaefer_labels_rh])))}"
-    )
-
     parcel_names = schaefer.labels
-    _network_parcel_map = {k: [] for k in SCHAEFER_NETWORK_PREFIXES}
+    _network_parcel_map = {key: [] for key in SCHAEFER_NETWORK_PREFIXES}
     for i, name in enumerate(parcel_names):
-        name_str = name.decode() if isinstance(name, bytes) else str(name)
-        for net_key, prefix in SCHAEFER_NETWORK_PREFIXES.items():
-            if prefix in name_str:
-                _network_parcel_map[net_key].append(i + 1)
+        label = name.decode() if isinstance(name, bytes) else str(name)
+        for key, prefix in SCHAEFER_NETWORK_PREFIXES.items():
+            if prefix in label:
+                _network_parcel_map[key].append(i + 1)
                 break
 
-    logger.info(f"Network parcel counts: { {k: len(v) for k, v in _network_parcel_map.items()} }")
+    logger.info(
+        "Network parcel counts: %s",
+        {key: len(values) for key, values in _network_parcel_map.items()},
+    )
     _atlas_loaded = True
 
 
 def _average_network(preds_concat, labels_concat, parcel_indices):
-    """Mean activation timeseries over vertices in parcel_indices → (n_timesteps,)"""
+    """Mean timeseries over vertices in parcel_indices."""
     mask = np.isin(labels_concat, parcel_indices)
     if mask.sum() == 0:
-        return np.zeros(preds_concat.shape[0])
+        return np.zeros(preds_concat.shape[0], dtype=np.float32)
     return preds_concat[:, mask].mean(axis=1)
 
 
-def _zscore(ts):
-    """Z-score a 1-D timeseries. Returns zeros if flat."""
-    std = ts.std()
+def _zscore_timeseries(ts):
+    """Z-score a 1-D timeseries. Flat signals return zeros."""
+    std = float(np.std(ts))
     if std < 1e-8:
         return np.zeros_like(ts)
-    return (ts - ts.mean()) / std
+    return (ts - np.mean(ts)) / std
 
 
-def _relative_display(raw_means_dict):
+# Backwards-compatible alias for older imports/tests.
+_zscore = _zscore_timeseries
+
+
+def _safe_corr(ts_a, ts_b):
+    """Correlation guarded against flat or degenerate signals."""
+    if ts_a.size < 2 or ts_b.size < 2:
+        return 0.0
+    if float(np.std(ts_a)) < 1e-8 or float(np.std(ts_b)) < 1e-8:
+        return 0.0
+    corr = float(np.corrcoef(ts_a, ts_b)[0, 1])
+    if np.isnan(corr):
+        return 0.0
+    return corr
+
+
+def _rms(ts):
+    """Root-mean-square magnitude of a timeseries."""
+    return float(np.sqrt(np.mean(np.square(ts))))
+
+
+def _bounded_share(primary, comparison, epsilon=1e-6):
     """
-    Given a dict of {name: raw_mean_activation}, normalize to 0–10 so the
-    most-active network = 10 and least-active = 0. Preserves relative differences.
-    If all networks are equal (flat signal) returns 5.0 for each.
+    Convert two non-negative quantities into a stable [0, 1] share.
+
+    This avoids clip-specific min-max normalization and makes the score depend on
+    relative dominance instead of arbitrary signal scale.
     """
-    keys = list(raw_means_dict.keys())
-    vals = np.array([raw_means_dict[k] for k in keys], dtype=float)
-    v_min, v_max = vals.min(), vals.max()
-    v_range = v_max - v_min
-    if v_range < 1e-6:
-        normed = np.full(len(keys), 5.0)
+    primary = max(float(primary), 0.0)
+    comparison = max(float(comparison), 0.0)
+    return primary / (primary + comparison + epsilon)
+
+
+def _relative_display(raw_values):
+    """
+    Map network magnitudes to a relative 0-10 prominence scale for display only.
+
+    This is intentionally labeled as relative prominence, not an absolute
+    neuroscientific intensity scale.
+    """
+    keys = list(raw_values.keys())
+    values = np.array([raw_values[key] for key in keys], dtype=float)
+    v_min = float(values.min())
+    v_max = float(values.max())
+    if abs(v_max - v_min) < 1e-6:
+        scaled = np.full(len(keys), 5.0)
     else:
-        normed = np.clip((vals - v_min) / v_range * 10, 0, 10)
-    return {k: round(float(v), 2) for k, v in zip(keys, normed)}
+        scaled = np.clip((values - v_min) / (v_max - v_min) * 10.0, 0.0, 10.0)
+    return {key: round(float(value), 2) for key, value in zip(keys, scaled)}
 
 
-def compute_network_scores(preds):
+def _brain_rot_from_enrichment(score_100):
+    """Inverse display mapping retained for product continuity."""
+    return round(float(np.clip(10.0 - score_100 / 10.0, 0.0, 10.0)), 2)
+
+
+def compute_network_scores(preds, modality="audiovisual"):
     """
+    Aggregate TRIBE cortical predictions into interpretable engagement metrics.
+
     Args:
-        preds: np.ndarray (n_timesteps, n_vertices)  — TRIBE v2 fsaverage5 output
+        preds: np.ndarray of shape (n_timesteps, n_vertices)
+        modality: "audiovisual" or "audio"
 
-    Returns dict with:
-        brain_rot      — 0–10  higher = more passive/brain-rotting
-        dmn            — 0–10  Default Mode Network activation
-        fpn            — 0–10  Frontoparietal (executive) activation
-        reward         — 0–10  Salience / reward-circuit activation
-        visual         — 0–10  Visual cortex activation
-        somatomotor    — 0–10  Somatomotor / auditory activation
-        dominant_pattern — str label
-        timeseries     — list of [dmn, fpn, reward, visual, somatomotor, brain_rot] per frame
-        metrics        — dict of raw component values for debugging
+    Returns:
+        dict with:
+          brain_rot         - 0-10 inverse risk display used by the extension
+          health_score      - 0-100 cognitive enrichment score
+          enrichment_score  - alias of health_score
+          passive_risk      - 0-100 sensory-dominant passive risk
+          dmn/fpn/salience  - relative 0-10 network prominence for display
+          reward            - backwards-compatible alias of salience
+          dominant_pattern  - honest qualitative label
+          correlation       - signed DMN-control correlation
+          metrics           - component values for debugging / UI
     """
+    if modality not in {"audiovisual", "audio"}:
+        raise ValueError(f"Unsupported modality: {modality}")
+
     _load_atlas()
 
     if preds.ndim != 2:
-        raise ValueError(f"Expected preds.ndim==2, got shape {preds.shape}")
+        raise ValueError(f"Expected preds.ndim == 2, got shape {preds.shape}")
 
     n_timesteps, n_vertices = preds.shape
-    logger.info(f"Computing network scores: preds.shape={preds.shape}")
+    if n_timesteps == 0:
+        raise ValueError("Expected at least one timestep in preds")
 
-    # Pad/trim to 20484
-    expected = 20484
-    if n_vertices < expected:
-        preds = np.concatenate([preds, np.zeros((n_timesteps, expected - n_vertices))], axis=1)
-    elif n_vertices > expected:
-        preds = preds[:, :expected]
+    expected_vertices = 20484
+    if n_vertices < expected_vertices:
+        pad = np.zeros((n_timesteps, expected_vertices - n_vertices), dtype=preds.dtype)
+        preds = np.concatenate([preds, pad], axis=1)
+    elif n_vertices > expected_vertices:
+        preds = preds[:, :expected_vertices]
 
     lh_preds = preds[:, :10242]
     rh_preds = preds[:, 10242:]
     labels_concat = np.concatenate([_schaefer_labels_lh, _schaefer_labels_rh])
-    preds_concat  = np.concatenate([lh_preds, rh_preds], axis=1)
+    preds_concat = np.concatenate([lh_preds, rh_preds], axis=1)
 
-    # ── Raw network timeseries ──────────────────────────────────────────────────
     net = {}
     for key, parcels in _network_parcel_map.items():
-        net[key] = _average_network(preds_concat, labels_concat, parcels) if parcels \
-                   else np.zeros(n_timesteps)
+        net[key] = _average_network(preds_concat, labels_concat, parcels)
 
-    dmn_ts      = net['dmn']
-    exec_ts     = net['fpn']          # frontoparietal / executive
-    visual_ts   = net['visual']
-    somot_ts    = net['somatomotor']
-    datt_ts     = net['dorsal_attn']
-    limbic_ts   = net['limbic']
-    sal_ts      = net['salience']     # salience / ventral attention — reward proxy
+    dmn_ts = net["dmn"]
+    exec_ts = net["fpn"]
+    visual_ts = net["visual"]
+    somot_ts = net["somatomotor"]
+    dorsal_attn_ts = net["dorsal_attn"]
+    salience_ts = net["salience"]
 
-    tpn_ts = (exec_ts + limbic_ts + datt_ts) / 3.0  # task-positive composite
+    # Control is the strongest task-positive signal we can justify from the
+    # available Schaefer 7-network atlas.
+    control_ts = 0.65 * exec_ts + 0.35 * dorsal_attn_ts
 
-    EPSILON = 0.01
-
-    def norml(val, lo, hi):
-        if hi - lo < EPSILON:
-            return 0.5
-        return float(np.clip((val - lo) / (hi - lo), 0, 1))
-
-    # Component 1 — Coupling Strength (0–1): |corr(DMN, TPN)|
-    cc = np.corrcoef(dmn_ts, tpn_ts)
-    corr_val = float(cc[0, 1]) if not np.isnan(cc[0, 1]) else 0.0
-    coupling = abs(corr_val)
-
-    # Component 2 — Network Magnitude (0–1)
-    mag = np.mean(tpn_ts) + np.mean(dmn_ts)
-    mag_norm = norml(mag, np.min(tpn_ts + dmn_ts), np.max(tpn_ts + dmn_ts) * 2)
-
-    # Component 3 — Narrative Complexity (0–1): variance in cognitive networks
-    narr = np.std(tpn_ts) + np.std(limbic_ts)
-    narr_norm = norml(narr, 0, max(np.std(visual_ts) + np.std(somot_ts), narr, EPSILON) * 2)
-
-    # Component 4 — Sensory-Executive Ratio: high sensory, low exec = brain rot
-    # NOTE: in audio-only inference visual_ts / somot_ts are ~0 (no video modality).
-    # Use salience as a proxy for sensory drive so the score is still meaningful.
-    mean_vis_som = np.mean(np.abs(visual_ts) + np.abs(somot_ts))
-    mean_sal     = np.mean(np.abs(sal_ts))
-    mean_sens    = mean_vis_som + 0.5 * mean_sal   # salience as partial proxy
-    mean_exec    = max(float(np.mean(exec_ts)), EPSILON)
-    ser          = mean_sens / (mean_exec + EPSILON)
-    ser_norm     = norml(ser, 0, max(ser * 2, 3.0))
-
-    # Component 5 — Sensory Chaos: volatility (jump-cuts, flashing, sound blasts)
-    chaos      = np.std(visual_ts) + np.std(somot_ts) + 0.5 * np.std(sal_ts)
-    chaos_max  = max(narr, chaos, EPSILON)
-    chaos_norm = norml(chaos, 0, chaos_max * 2)
-
-    # Component 6 — Hijack Index: salience spikes × sensory load ÷ executive brakes
-    sal_vol     = np.std(sal_ts)
-    hijack      = (sal_vol * mean_sens) / (mean_exec + EPSILON)
-    hijack_norm = norml(hijack, 0, max(hijack * 2, 5.0))
-
-    # Weights (sum of positive = 0.55, sum of negative = 0.45)
-    W1, W2, W3 = 0.25, 0.10, 0.20
-    W4, W5, W6 = 0.15, 0.10, 0.20
-
-    health_raw = (W1*coupling + W2*mag_norm + W3*narr_norm
-                  - W4*ser_norm - W5*chaos_norm - W6*hijack_norm)
-
-    # Health score 0–100  (raw ∈ [−0.45, +0.55])
-    health_100 = float(np.clip((health_raw + 0.45) * 100, 0, 100))
-
-    # Creativity/Flow bonus (+10 pts if DMN and exec co-activate positively)
-    dmn_mean  = np.mean(dmn_ts)
-    exec_mean = np.mean(exec_ts)
-    p75 = float(np.percentile(np.concatenate([dmn_ts, exec_ts]), 75))
-    if dmn_mean > p75 and exec_mean > p75 and corr_val > 0.3:
-        health_100 = min(100.0, health_100 + 10.0)
-        pattern = "Creative / Flow State"
-    elif np.mean(tpn_ts) > dmn_mean and corr_val < -0.3:
-        pattern = "Active Learning"
+    # We do not claim an auditory network here because the atlas does not expose
+    # one cleanly. Somatomotor is treated as the best available sensory-adjacent
+    # cortical proxy. In audio-only mode we lean on it more heavily.
+    if modality == "audio":
+        sensory_ts = 0.20 * visual_ts + 0.80 * somot_ts
     else:
-        pattern = "Passive Consumption"
+        sensory_ts = 0.70 * visual_ts + 0.30 * somot_ts
 
-    # ── Brain Rot Score: 0–10, higher = more brain-rotting ─────────────────────
-    brain_rot = round(float(np.clip(10.0 - health_100 / 10.0, 0, 10)), 2)
+    dmn_power = _rms(dmn_ts)
+    exec_power = _rms(exec_ts)
+    control_power = _rms(control_ts)
+    visual_power = _rms(visual_ts)
+    somot_power = _rms(somot_ts)
+    salience_power = _rms(salience_ts)
+    sensory_power = _rms(sensory_ts)
 
-    # ── Display scores (0–10, relative within this content) ────────────────────
-    # Use raw means so networks that are genuinely more active score higher.
-    # Min-max across the 5 networks: most active = 10, least active = 0.
-    display = _relative_display({
-        'dmn':         float(np.mean(dmn_ts)),
-        'fpn':         float(np.mean(exec_ts)),
-        'reward':      float(np.mean(sal_ts)),
-        'visual':      float(np.mean(visual_ts)),
-        'somatomotor': float(np.mean(somot_ts)),
-    })
+    dmn_var = float(np.std(dmn_ts))
+    control_var = float(np.std(control_ts))
+    salience_var = float(np.std(salience_ts))
 
-    # ── Z-score timeseries for per-frame animation ─────────────────────────────
-    dmn_z = _zscore(dmn_ts)
-    fpn_z = _zscore(exec_ts)
-    sal_z = _zscore(sal_ts)
-    vis_z = _zscore(visual_ts)
-    som_z = _zscore(somot_ts)
+    cognitive_var = control_var + 0.5 * dmn_var
+    sensory_var = float(np.std(sensory_ts))
 
-    def clip_z(z): return float(np.clip(z, -10, 10))
+    corr_val = _safe_corr(dmn_ts, control_ts)
+
+    network_coordination = abs(corr_val)
+    internal_control_balance = 1.0 - abs(dmn_power - control_power) / (
+        dmn_power + control_power + 1e-6
+    )
+    control_share = _bounded_share(control_power, sensory_power)
+    cognitive_dynamism = _bounded_share(cognitive_var, sensory_var)
+    sensory_dominance = _bounded_share(sensory_power, control_power)
+    sensory_fragmentation = _bounded_share(sensory_var, cognitive_var)
+    salience_capture = _bounded_share(salience_power + 0.5 * salience_var, control_power + 0.5 * control_var)
+
+    # Transparent composite. Positive terms reward organized cortical engagement.
+    enrichment = (
+        0.35 * network_coordination
+        + 0.25 * control_share
+        + 0.20 * cognitive_dynamism
+        + 0.20 * internal_control_balance
+    )
+
+    # Negative terms penalize sensory-heavy, fragmented, attention-capturing content.
+    passive_risk = (
+        0.40 * sensory_dominance
+        + 0.30 * sensory_fragmentation
+        + 0.30 * salience_capture
+    )
+
+    enrichment_score = float(np.clip(50.0 + 50.0 * (enrichment - passive_risk), 0.0, 100.0))
+    passive_risk_score = float(np.clip(passive_risk * 100.0, 0.0, 100.0))
+    brain_rot = _brain_rot_from_enrichment(enrichment_score)
+
+    if passive_risk >= 0.62 and network_coordination < 0.40:
+        pattern = "Sensory-dominant passive consumption"
+    elif corr_val >= 0.20 and internal_control_balance >= 0.55 and cognitive_dynamism >= 0.50:
+        pattern = "Reflective / narrative engagement"
+    elif corr_val <= -0.15 and control_share >= 0.55:
+        pattern = "Focused / task-positive engagement"
+    else:
+        pattern = "Mixed engagement"
+
+    display = _relative_display(
+        {
+            "dmn": dmn_power,
+            "fpn": exec_power,
+            "salience": salience_power,
+            "visual": visual_power,
+            "somatomotor": somot_power,
+        }
+    )
+
+    dmn_z = _zscore_timeseries(dmn_ts)
+    fpn_z = _zscore_timeseries(exec_ts)
+    salience_z = _zscore_timeseries(salience_ts)
+    visual_z = _zscore_timeseries(visual_ts)
+    somot_z = _zscore_timeseries(somot_ts)
+
+    def clip_z(value):
+        return float(np.clip(value, -10.0, 10.0))
 
     timeseries = [
-        [clip_z(dmn_z[t]), clip_z(fpn_z[t]), clip_z(sal_z[t]),
-         clip_z(vis_z[t]), clip_z(som_z[t]), brain_rot]
+        [
+            clip_z(dmn_z[t]),
+            clip_z(fpn_z[t]),
+            clip_z(salience_z[t]),
+            clip_z(visual_z[t]),
+            clip_z(somot_z[t]),
+            brain_rot,
+        ]
         for t in range(n_timesteps)
     ]
 
+    metrics = {
+        "network_coordination": round(float(network_coordination), 3),
+        "control_share": round(float(control_share), 3),
+        "cognitive_dynamism": round(float(cognitive_dynamism), 3),
+        "internal_control_balance": round(float(internal_control_balance), 3),
+        "sensory_dominance": round(float(sensory_dominance), 3),
+        "sensory_fragmentation": round(float(sensory_fragmentation), 3),
+        "salience_capture": round(float(salience_capture), 3),
+        "salience_variability": round(float(_bounded_share(salience_var, control_var + 1e-6)), 3),
+        # Backwards-compatible aliases for the current UI.
+        "coupling_strength": round(float(network_coordination), 3),
+        "narrative_complexity": round(float(cognitive_dynamism), 3),
+        "sensory_exec_ratio": round(float(sensory_dominance), 3),
+        "sensory_chaos": round(float(sensory_fragmentation), 3),
+        "hijack_index": round(float(salience_capture), 3),
+    }
+
     return {
-        # ── Primary display scores (0–10) ──
-        'brain_rot':        brain_rot,
-        'dmn':              display['dmn'],
-        'fpn':              display['fpn'],
-        'reward':           display['reward'],
-        'visual':           display['visual'],
-        'somatomotor':      display['somatomotor'],
-
-        # ── Richer metadata ──
-        'dominant_pattern': pattern,
-        'health_score':     round(health_100, 1),     # 0–100, higher = healthier
-        'correlation':      round(corr_val, 3),
-
-        # ── Animation ──
-        'timeseries': timeseries,
-
-        # ── Debug components ──
-        'metrics': {
-            'coupling_strength':      round(float(coupling), 3),
-            'network_magnitude':      round(float(mag_norm), 3),
-            'narrative_complexity':   round(float(narr_norm), 3),
-            'sensory_exec_ratio':     round(float(ser), 3),
-            'sensory_chaos':          round(float(chaos_norm), 3),
-            'hijack_index':           round(float(hijack_norm), 3),
-        },
+        "brain_rot": brain_rot,
+        "dmn": display["dmn"],
+        "fpn": display["fpn"],
+        "salience": display["salience"],
+        "reward": display["salience"],  # Legacy alias used by the extension.
+        "visual": display["visual"],
+        "somatomotor": display["somatomotor"],
+        "dominant_pattern": pattern,
+        "health_score": round(enrichment_score, 1),
+        "enrichment_score": round(enrichment_score, 1),
+        "passive_risk": round(passive_risk_score, 1),
+        "correlation": round(float(corr_val), 3),
+        "modality": modality,
+        "timeseries": timeseries,
+        "metrics": metrics,
+        "scientific_basis": (
+            "Cortical proxy score derived from TRIBE v2 large-scale network "
+            "coordination, control-vs-sensory balance, cognitive dynamism, "
+            "sensory fragmentation, and salience capture."
+        ),
     }

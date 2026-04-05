@@ -46,27 +46,24 @@ def test_zscore_preserves_shape():
     assert z.shape == ts.shape
 
 
-# ─── Brain rot formula tests ──────────────────────────────────────────────────
+# ─── Brain rot mapping tests ──────────────────────────────────────────────────
 
-def test_brain_rot_no_division_by_zero():
-    """fpn=0 should not cause ZeroDivisionError — floor at 0.01."""
-    reward, dmn, fpn = 1.0, 1.0, 0.0
-    brain_rot = (reward + dmn) / max(fpn, 0.01)
-    assert np.isfinite(brain_rot), "brain_rot should be finite when fpn=0"
-    assert brain_rot == 200.0  # (1+1)/0.01
-
-
-def test_brain_rot_normal_values():
-    reward, dmn, fpn = 0.5, 0.8, 0.6
-    brain_rot = (reward + dmn) / max(fpn, 0.01)
-    assert abs(brain_rot - (1.3 / 0.6)) < 1e-6
+def test_brain_rot_inverse_of_enrichment_score():
+    from parcellation import _brain_rot_from_enrichment
+    assert _brain_rot_from_enrichment(0) == 10.0
+    assert _brain_rot_from_enrichment(100) == 0.0
+    assert _brain_rot_from_enrichment(72) == 2.8
 
 
-def test_brain_rot_all_equal():
-    """When all networks are equal, brain rot = 2."""
-    v = 1.0
-    brain_rot = (v + v) / max(v, 0.01)
-    assert brain_rot == 2.0
+def test_brain_rot_clipped_to_display_range():
+    from parcellation import _brain_rot_from_enrichment
+    assert _brain_rot_from_enrichment(-20) == 10.0
+    assert _brain_rot_from_enrichment(140) == 0.0
+
+
+def test_brain_rot_midpoint_score():
+    from parcellation import _brain_rot_from_enrichment
+    assert _brain_rot_from_enrichment(50) == 5.0
 
 
 # ─── API tests (requires running FastAPI app) ─────────────────────────────────
@@ -93,7 +90,11 @@ def test_mock_endpoint_returns_valid_shape():
     )
     assert response.status_code == 200
     data = response.json()
-    required = ['reel_id', 'dmn', 'fpn', 'reward', 'brain_rot', 'timeseries', 'viewer_html']
+    required = [
+        'reel_id', 'dmn', 'fpn', 'salience', 'reward', 'brain_rot',
+        'health_score', 'enrichment_score', 'passive_risk',
+        'timeseries', 'viewer_html',
+    ]
     for field in required:
         assert field in data, f"Missing field: {field}"
     assert data['mock'] is True
